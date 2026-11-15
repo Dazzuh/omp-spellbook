@@ -1,6 +1,6 @@
 {
 	"name": "omp-spellbook",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "omp extension: type `? <description>` in the composer and get the shell command, morphed in as `!<command>`.",
 	"keywords": [
 		"omp",
@@ -23,6 +23,7 @@
 	"main": "./src/index.ts",
 	"files": [
 		"src",
+		"tern",
 		"README.md",
 		"LICENSE",
 		"CHANGELOG.md"

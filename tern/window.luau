@@ -1,0 +1,3 @@
+-- Spellbook's Tern half. Its look is the manifest's `styles` sheet (spellbook.css), which Tern
+-- installs in every window, remote hosts and the web tab included, before this entry runs.
+-- A manifest needs a host or window entry, so this one is here; palette casting grows into it.
