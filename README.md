@@ -120,7 +120,7 @@ bun run typecheck
 SPELLBOOK_LIVE=1 bun test test/live.test.ts   # real model through stock omp; runs the commands in your ! shell
 ```
 
-The live test starts omp with `bunx @oh-my-pi/pi-coding-agent@18.20.2` unless `SPELLBOOK_OMP` names another command,
+The live test starts omp with `bun x @oh-my-pi/pi-coding-agent@18.20.2` unless `SPELLBOOK_OMP` names another command,
 and uses `anthropic/claude-haiku-5-5` unless `SPELLBOOK_MODEL` says otherwise. CI runs the unit tests, a load check in
 stock omp and a GitHub install on Windows, Linux and macOS; the live test runs there when the repository has an
 `ANTHROPIC_API_KEY` secret.

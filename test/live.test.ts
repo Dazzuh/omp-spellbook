@@ -3,7 +3,7 @@
  * `omp -p "/spellbook cast …"`, and the command runs in the shell omp's `!` uses on this machine.
  *
  * Runs only with SPELLBOOK_LIVE=1 (it spends tokens). Options:
- * - SPELLBOOK_OMP: how to start omp (default `bunx @oh-my-pi/pi-coding-agent@18.20.2`)
+ * - SPELLBOOK_OMP: how to start omp (default `bun x @oh-my-pi/pi-coding-agent@18.20.2`)
  * - SPELLBOOK_MODEL: model for the `spellbook` role (default `anthropic/claude-haiku-5-5`)
  */
 import { afterAll, describe, expect, test } from "bun:test";
@@ -14,7 +14,8 @@ import { detectShell, liveProbe } from "../src/platform";
 
 const LIVE = process.env.SPELLBOOK_LIVE === "1";
 const REPO = path.resolve(import.meta.dir, "..");
-const OMP = (process.env.SPELLBOOK_OMP ?? "bunx @oh-my-pi/pi-coding-agent@18.20.2").split(" ");
+// `bun x`, not `bunx`: some bun installs ship only the `bun` binary.
+const OMP = process.env.SPELLBOOK_OMP?.split(" ") ?? [process.execPath, "x", "@oh-my-pi/pi-coding-agent@18.20.2"];
 const MODEL = process.env.SPELLBOOK_MODEL ?? "anthropic/claude-haiku-5-5";
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-live-"));
 
