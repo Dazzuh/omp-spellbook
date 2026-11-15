@@ -46,6 +46,24 @@ shell.
 
 To try it without installing: `omp -e /path/to/omp-spellbook`. To remove it: `omp plugin uninstall omp-spellbook`.
 
+### The Tern half (optional)
+
+In [Tern](https://docs.stencil.so/tern), Spellbook has a second part: a small Tern plugin that gives a spell line its full
+look. While a `?` line is in omp's composer it shows a **✦ spellbook** chip where omp's bash chip sits and an accent
+glow around the composer; while the model answers, the glow breathes; when the command lands as `!…`, both go and
+omp's bash chip takes over. Install it once (any OS):
+
+```sh
+tern plugin install github.com/Dazzuh/omp-spellbook/tern
+```
+
+`tern plugin list` then shows `spellbook 0.1.1`; `tern plugin remove spellbook` removes it. Its look is plain CSS
+(`tern/spellbook.css`) shipped as the plugin's manifest styles, so it also reaches remote hosts and Tern's web tab,
+and its colours follow your Tern theme's accent.
+
+Without the plugin, Tern still shows the `?` in accent and the description shimmering like a magic keyword; plain
+terminals show the `?` in accent and a purple hue sweep over the description.
+
 ## Choosing the model
 
 Spellbook asks a small, fast model. It uses omp's model roles, like the rest of omp:
@@ -93,8 +111,9 @@ The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override the fi
 - **`none`**: the command just appears.
 
 Motion turns off by itself when omp's **Motion** setting (`tui.motion`) is `reduced` or `none`, or when Tern's Reduce
-Motion is on. Colour shows in Tern and in terminals omp draws in ANSI; when another extension has replaced omp's
-composer, Spellbook plays the morph as plain text.
+Motion is on: no morph, no shimmer or pulse on the `?` line, and the Tern half's glow stays still. Colour shows in Tern
+and in terminals omp draws in ANSI; when another extension has replaced omp's composer, Spellbook plays the morph as
+plain text and leaves the `?` line unstyled.
 
 ## The spellbook file
 
