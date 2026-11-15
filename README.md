@@ -5,7 +5,7 @@ plain words, and omp's own way of asking for it morphs into the composer: a prom
 keywords that fit, a slash command, a setting, or with `?!` a shell command. You read it, edit it if you like, and
 press Enter. Nothing is sent or run until you do; Enter while the morph is still playing only finishes it.
 
-![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into an omp prompt that fans the review out to subagents with orchestrate; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
+![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into "orchestrate a review of this repo for bugs. Get a few agents to each take a separate area of the codebase…"; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
 
 - `? <description>` → what to type into omp for it:
   - a **prompt** for the agent, naming your installed skills that apply as `skill://<name>` and using a magic
@@ -105,8 +105,12 @@ you don't have is never named, `/skill:` becomes `skill://`, a keyword you switc
 setting is flagged. The writer also gets omp's own guidance on when its agent works alone and when it splits work
 across subagents, so a request with parts is written out with its goal, scope, parts and what done looks like, while a
 small one stays short. A setting omp marks experimental or risky is never one Enter away: you get a prompt asking omp
-to explain it instead, with the `!omp config set` line in the note under it if you want it anyway. Any other setting's
-note says how to undo it, or that it is already set.
+to explain it instead, with the `!omp config set` line in the note under it if you want it anyway.
+
+Settings in the map show your current value where you changed it from the default. A setting change lands only when
+a quick third call says that moving it from your current value does what you asked, judged by omp's own description
+of the setting and each of its values; otherwise (or when it is already at that value) you get a prompt asking omp to
+explain the feature instead. A setting change's note says how to undo it, with your current value.
 
 For a `?!`/`?!!` command: the description, the working folder, the OS, the shell `!` runs in (plus notes such as which
 tools omp's shell has built in), your SSH host aliases from `~/.ssh/config` (names only), your last few `!` commands in

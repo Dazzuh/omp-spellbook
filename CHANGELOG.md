@@ -15,7 +15,10 @@
   written as `skill://`, settings with their `!`. The writer also gets omp's own guidance on when its agent works alone
   or splits work, so a request with parts is written out with its goal, scope, parts and what done looks like, while a
   small one stays short. A setting omp marks experimental or risky lands as a prompt asking omp to explain it, with
-  the `!omp config set` line in the note; other settings' notes say how to undo them, or that they are already set.
+  the `!omp config set` line in the note. Settings show your current value where you changed it from the default; a
+  setting change lands only when a third call says moving it from your current value does what you asked (judged by
+  omp's descriptions of the setting and its values), and its note says how to undo it. Otherwise, or when it is
+  already at that value, you get a prompt asking omp to explain the feature.
 - **Shell commands moved to `?!`** (`!<command>`) and `?!!` (`!!<command>`); `??` is no longer a spell.
 - Prompt spells you send are saved in the spellbook like commands; Tab on a `?` line offers saved prompts, Tab on a
   `?!`/`?!!` line saved commands. The spellbook file is now version 2 (`entries`, each with a `kind`); a 0.1 file is

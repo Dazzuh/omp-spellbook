@@ -159,6 +159,7 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 		if (answer.kind === "setting" && settingId?.includes("experimental")) {
 			expect(answer.explain).toMatch(/experimental/i);
 		}
+		if (answer.kind === "setting") expect(settingId?.startsWith("compaction.")).toBe(true);
 	}, 240_000);
 
 	test("'get a bunch of helpers to check every file for bugs at once' gets orchestrate", () => {
@@ -200,6 +201,7 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 			answer.text.includes("tools.approvalMode") ||
 			/approval/i.test(answer.text);
 		expect(Boolean(reached)).toBe(true);
+		if (answer.kind === "setting") expect(answer.text).not.toMatch(/tools\.approvalMode\s+(write|always-ask)/);
 	}, 240_000);
 
 	test("'fix the typo in the readme title' stays a short prompt with no keyword", () => {
@@ -242,5 +244,6 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 		expect(answer.text).toMatch(/test/i);
 		expect(answer.text).toMatch(/doc/i);
 		expect(answer.text).not.toMatch(/\borchestrate[.!]?\s*$/);
+		expect(answer.text).not.toMatch(/\brewrite\b/i);
 	}, 240_000);
 });

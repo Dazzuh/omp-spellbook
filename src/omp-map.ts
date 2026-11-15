@@ -173,12 +173,14 @@ function layout(map: OmpMap, settingChars: number, sentenceChars: number): Line[
 			}),
 		),
 		...section(
-			"omp settings (omp config set <id> <value>):",
+			"omp settings (omp config set <id> <value>; \"currently\" shown only where the user changed it from the default):",
 			map.settings.map(s => {
 				const type = s.values.length ? `${s.type} one of ${s.values.join("|")}` : s.type;
+				const defaultText = s.default ? `, default ${s.default}` : "";
+				const currentText = s.current && s.current !== s.default ? `, currently ${s.current}` : "";
 				const description = cutChars(s.description, settingChars);
 				const tag = s.experimental ? " [experimental]" : "";
-				const head = `- ${s.id} (${type})${tag}`;
+				const head = `- ${s.id} (${type}${defaultText}${currentText})${tag}`;
 				const risk = s.warning ? ` Risk: ${s.warning}` : "";
 				return `${description ? `${head}: ${description}` : head}${risk}`;
 			}),

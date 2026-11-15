@@ -47,7 +47,12 @@ export interface SettingSource {
 	default?: unknown;
 	/** Credentials are never offered to the model. */
 	credential?: boolean;
-	ui?: { label?: string; description?: string; warning?: string };
+	ui?: {
+		label?: string;
+		description?: string;
+		warning?: string;
+		options?: ReadonlyArray<{ value: string; label?: string; description?: string }>;
+	};
 }
 
 /** One omp setting as the model sees it. */
@@ -62,6 +67,8 @@ export interface SettingEntry {
 	experimental: boolean;
 	/** omp's risk note (`ui.warning`), or empty. */
 	warning: string;
+	/** The values omp describes in its UI, with their descriptions; empty when omp gives none. */
+	options: ReadonlyArray<{ value: string; description: string }>;
 	/** The current value as JSON text, or empty when undefined. */
 	current: string;
 }
@@ -277,6 +284,10 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 				/\bexperimental\b/i.test(s.ui?.label ?? "") ||
 				/\bexperimental\b/i.test(s.ui?.description ?? ""),
 			warning: s.ui?.warning ?? "",
+			// Some settings' `ui.options` is not a list (a submenu or an option source): those offer none here.
+			options: (Array.isArray(s.ui?.options) ? s.ui.options : [])
+				.filter(o => typeof o?.value === "string")
+				.map(o => ({ value: o.value, description: describe(o.description || o.label) })),
 			current: valueText(sources.setting(s.id)),
 		}));
 	return new Catalogue(

@@ -210,6 +210,8 @@ export default function spellbook(pi: ExtensionAPI): void {
 
 	pi.on("user_bash", (event, ctx) => {
 		live = ctx;
+		// The cached map carries each setting's current value; a `config set` changes it, so the next cast rebuilds.
+		if (/^\s*omp\s+config\s+set\b/.test(event.command)) mapCache = undefined;
 		book.onUserBash(event.command);
 		return undefined;
 	});

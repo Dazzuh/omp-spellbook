@@ -4,7 +4,7 @@ import { lookup, all } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { getDocFilenames, getEmbeddedDoc } from "@oh-my-pi/pi-coding-agent/internal-urls/docs-index";
 import { MAGIC_KEYWORDS } from "@oh-my-pi/pi-coding-agent/modes/magic-keywords";
 import * as omp from "@oh-my-pi/pi-coding-agent";
-import { buildCatalogue, type CatalogueSources, type SettingEntry, type SettingSource } from "../src/catalogue";
+import { buildCatalogue, readOmpCatalogue, type CatalogueSources, type SettingEntry, type SettingSource } from "../src/catalogue";
 import { buildOmpMap, type DocSummary, docSummary, MAP_SENTENCE_CHARS, type OmpMap, renderMap } from "../src/omp-map";
 
 const decodeStrict = (bytes: Uint8Array): string => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -112,7 +112,7 @@ describe("buildOmpMap from fixture sources", () => {
 const sampleMap: OmpMap = {
 	docs: [{ name: "a.md", title: "A title", sentence: "A sentence." }],
 	settings: [
-		{ id: "s.one", type: "enum", values: ["x", "y"], default: "", description: "desc 語😀", experimental: false, warning: "", current: "" },
+		{ id: "s.one", type: "enum", values: ["x", "y"], default: "", description: "desc 語😀", experimental: false, warning: "", options: [], current: "" },
 	],
 	keywords: [{ word: "ultrathink", description: "Think" }],
 	skills: [{ name: "kata", description: "Kata CLI" }],
@@ -130,6 +130,7 @@ function hugeMap(settings: number): OmpMap {
 			description: "語😀".repeat(60),
 			experimental: false,
 			warning: "",
+			options: [],
 			current: "",
 		})),
 	};
@@ -138,18 +139,34 @@ function hugeMap(settings: number): OmpMap {
 describe("renderMap", () => {
 	test("a setting line marks experimental after its type and ends with its risk note", () => {
 		const settings: SettingEntry[] = [
-			{ id: "exp.one", type: "boolean", values: [], default: "false", description: "Pick", experimental: true, warning: "", current: "" },
-			{ id: "risk.two", type: "boolean", values: [], default: "", description: "Risky", experimental: false, warning: "Sends data out.", current: "" },
+			{ id: "exp.one", type: "boolean", values: [], default: "false", description: "Pick", experimental: true, warning: "", options: [], current: "" },
+			{ id: "risk.two", type: "boolean", values: [], default: "", description: "Risky", experimental: false, warning: "Sends data out.", options: [], current: "" },
 		];
 		const text = renderMap({ ...sampleMap, settings }, 1e9);
-		expect(text).toContain("- exp.one (boolean) [experimental]: Pick");
+		expect(text).toContain("- exp.one (boolean, default false) [experimental]: Pick");
 		expect(text).toContain("- risk.two (boolean): Risky Risk: Sends data out.");
+	});
+
+	test("default shows whenever set; currently only where it differs from the default", () => {
+		const settings: SettingEntry[] = [
+			{ id: "same.value", type: "boolean", values: [], default: "true", description: "Same", experimental: false, warning: "", options: [], current: "true" },
+			{ id: "changed.value", type: "enum", values: ["yolo", "write"], default: '"yolo"', description: "Changed", experimental: false, warning: "", options: [], current: '"write"' },
+			{ id: "unset.current", type: "string", values: [], default: '"x"', description: "Unset", experimental: false, warning: "", options: [], current: "" },
+			{ id: "no.default", type: "string", values: [], default: "", description: "Bare", experimental: false, warning: "", options: [], current: '"set"' },
+		];
+		const text = renderMap({ ...sampleMap, settings }, 1e9);
+		expect(text).toContain("- same.value (boolean, default true): Same\n");
+		expect(text).toContain('- changed.value (enum one of yolo|write, default "yolo", currently "write"): Changed');
+		expect(text).toContain('- unset.current (string, default "x"): Unset');
+		expect(text).toContain('- no.default (string, currently "set"): Bare');
 	});
 
 	test("every section appears with its lines when the budget is huge", () => {
 		const text = renderMap(sampleMap, 1e9);
 		expect(text).toContain("omp doc pages (omp://<name>):\n- a.md: A title. A sentence.");
-		expect(text).toContain("omp settings (omp config set <id> <value>):\n- s.one (enum one of x|y): desc 語😀");
+		expect(text).toContain(
+			'omp settings (omp config set <id> <value>; "currently" shown only where the user changed it from the default):\n- s.one (enum one of x|y): desc 語😀',
+		);
 		expect(text).toContain(
 			"Magic keywords (switched on; a standalone lowercase word in the prompt turns one on):\n- ultrathink: Think",
 		);
@@ -190,7 +207,7 @@ describe("renderMap", () => {
 		expect(() => decodeStrict(Buffer.from(text))).not.toThrow();
 		// Keywords lead (small, and never the lines a tight budget drops), then pages, then settings.
 		expect(text.startsWith("Magic keywords (")).toBe(true);
-		expect(text).toContain("omp doc pages (omp://<name>):\n- a.md: A title. A sentence.\nomp settings (omp config set <id> <value>):\n- s.0 (string): ");
+		expect(text).toContain("omp doc pages (omp://<name>):\n- a.md: A title. A sentence.\nomp settings (omp config set <id> <value>; \"currently\" shown only where the user changed it from the default):\n- s.0 (string): ");
 		expect(text.split("\n").at(-1)!.startsWith("- s.")).toBe(true);
 	});
 
@@ -252,6 +269,25 @@ describe("against stock omp", () => {
 			const orchestrate = renderMap(map, 1e9).split("\n").find(line => line.startsWith("- orchestrate: "));
 			expect(orchestrate).toContain("It tells the agent:");
 
+			console.log(`omp map, uncapped: ${Buffer.byteLength(renderMap(map, 1e9))} bytes`);
+		},
+		30_000,
+	);
+
+	test(
+		"tools.approvalMode offers its four modes with descriptions; the map fits the request budget",
+		async () => {
+			const catalogue = await readOmpCatalogue({ getCommands: () => [] });
+			const setting = catalogue.settings.find(s => s.id === "tools.approvalMode");
+			expect(setting).toBeDefined();
+			const options = Object.fromEntries(setting!.options.map(o => [o.value, o.description]));
+			for (const mode of ["always-ask", "always-ask-cached", "write", "yolo"]) {
+				expect(options[mode]).toBeTypeOf("string");
+				expect(options[mode]!.length).toBeGreaterThan(0);
+			}
+
+			const map = await buildOmpMap(catalogue);
+			expect(Buffer.byteLength(renderMap(map, 128_000))).toBeLessThanOrEqual(128_000);
 			console.log(`omp map, uncapped: ${Buffer.byteLength(renderMap(map, 1e9))} bytes`);
 		},
 		30_000,

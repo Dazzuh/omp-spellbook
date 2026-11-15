@@ -164,6 +164,31 @@ describe("catalogue from fixture sources", () => {
 		expect(byId["autolearn.enabled"]!.current).toBe("");
 	});
 
+	test("setting options: omp's description, else its label, else empty; none when omp gives none", () => {
+		const settings: SettingSource[] = [
+			{
+				id: "tools.mode",
+				type: "enum",
+				values: ["a", "b", "c"],
+				ui: {
+					options: [
+						{ value: "a", description: "Auto-approve  reads." },
+						{ value: "b", label: "Label b" },
+						{ value: "c" },
+					],
+				},
+			},
+			{ id: "plain.setting", type: "boolean" },
+		];
+		const byId = Object.fromEntries(buildCatalogue(sources({ settings })).settings.map(s => [s.id, s]));
+		expect(byId["tools.mode"]!.options).toEqual([
+			{ value: "a", description: "Auto-approve reads." },
+			{ value: "b", description: "Label b" },
+			{ value: "c", description: "" },
+		]);
+		expect(byId["plain.setting"]!.options).toEqual([]);
+	});
+
 	test("guidance passes through from the sources and defaults to empty", () => {
 		expect(buildCatalogue(sources({ guidance: "Work alone: one edit." })).guidance).toBe("Work alone: one edit.");
 		expect(buildCatalogue(sources()).guidance).toBe("");
