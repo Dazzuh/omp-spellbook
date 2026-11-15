@@ -2,10 +2,16 @@
  * Local check for commands that destroy or overwrite data, run on every generated command so the
  * warning never depends on the model remembering to flag it.
  */
+/** What may stand right before a program name: start, a separator, or a path or quote (`/bin/rm`, `\rm`, `"rm"`). */
+const AT = String.raw`(^|[\s;&|(\x60/\\"'])`;
+
 const RULES: ReadonlyArray<readonly [RegExp, string]> = [
-	[/(^|[\s;&|(`])(sudo\s+)?rm\s/, "deletes files"],
-	[/(^|[\s;&|(`])(rmdir|unlink|shred|srm)\s/, "deletes files"],
-	[/(^|[\s;&|(`])(del|erase|rd)\s+\//i, "deletes files"],
+	[new RegExp(`${AT}(sudo\\s+)?rm["']?(\\s|$)`), "deletes files"],
+	[new RegExp(`${AT}(rmdir|unlink|shred|srm)["']?(\\s|$)`), "deletes files"],
+	[new RegExp(`${AT}(del|erase|rd)\\s`, "i"), "deletes files"],
+	[new RegExp(`${AT}mv\\s`), "moves files, replacing any file already at the destination"],
+	[/\bsed\s+(-[a-zA-Z]*i|--in-place)/, "edits files in place"],
+	[new RegExp(`${AT}tee\\s+(?!-a\\b|--append\\b)`), "overwrites a file"],
 	[/\bRemove-Item\b/i, "deletes files"],
 	[/\bfind\b[^|;&]*\s-(delete|exec\s+rm)\b/, "deletes files"],
 	[/\bgit\s+(reset\s+--hard|clean\s+-[a-z]*[fdx])/, "throws away uncommitted work"],

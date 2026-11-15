@@ -20,11 +20,14 @@ export interface CastAnswer {
 	destructive: boolean;
 }
 
-/** Caps that keep the whole request (system prompt included) under 4 KB. */
+/** The whole request (system prompt + user message), in UTF-8 bytes. */
+export const REQUEST_BUDGET = 4000;
+
+/** Per-field caps, in UTF-8 bytes; when the request is still over budget, the lists shrink. */
 export const LIMITS = {
 	description: 500,
 	cwd: 200,
-	/** Characters for the whole SSH alias list. */
+	/** The whole SSH alias list. */
 	sshHosts: 300,
 	recentCommands: 5,
 	recentCommand: 120,
@@ -33,8 +36,18 @@ export const LIMITS = {
 	spellCommand: 120,
 } as const;
 
-function clip(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+/** Cut to `maxBytes` of UTF-8 on a code-point boundary, marking the cut with an ellipsis. */
+function clip(text: string, maxBytes: number): string {
+	if (Buffer.byteLength(text) <= maxBytes) return text;
+	let out = "";
+	let used = Buffer.byteLength("…");
+	for (const char of text) {
+		const size = Buffer.byteLength(char);
+		if (used + size > maxBytes) break;
+		out += char;
+		used += size;
+	}
+	return `${out}…`;
 }
 
 export function buildSystemPrompt(shell: ShellInfo): string {
@@ -50,37 +63,47 @@ export function buildSystemPrompt(shell: ShellInfo): string {
 	].join("\n");
 }
 
-/** The user message: the context packet, every list capped, plus the description. */
+/**
+ * The user message: the context packet, every field capped, plus the description. When the
+ * request would pass {@link REQUEST_BUDGET}, the oldest recent commands go first, then saved
+ * spells, then SSH aliases.
+ */
 export function buildUserMessage(packet: ContextPacket): string {
-	const lines: string[] = [];
-	lines.push(`OS: ${packet.os}`);
-	lines.push(`Shell: ${clip(packet.shell.shell, 200)}`);
-	for (const note of packet.shell.notes) lines.push(`Note: ${note}`);
-	lines.push(`cwd: ${clip(packet.cwd, LIMITS.cwd)}`);
+	const head = [`OS: ${clip(packet.os, 200)}`, `Shell: ${clip(packet.shell.shell, 200)}`];
+	for (const note of packet.shell.notes) head.push(`Note: ${note}`);
+	head.push(`cwd: ${clip(packet.cwd, LIMITS.cwd)}`);
 	let hosts = "";
 	for (const host of packet.sshHosts) {
 		const next = hosts ? `${hosts}, ${host}` : host;
-		if (next.length > LIMITS.sshHosts) break;
+		if (Buffer.byteLength(next) > LIMITS.sshHosts) break;
 		hosts = next;
 	}
-	if (hosts) lines.push(`SSH host aliases: ${hosts}`);
-	const recent = packet.recentCommands.slice(-LIMITS.recentCommands);
-	if (recent.length > 0) {
-		lines.push("Recent ! commands (oldest first):");
-		for (const command of recent) lines.push(`  ${clip(command.replace(/\s+/g, " "), LIMITS.recentCommand)}`);
-	}
-	const spells = packet.spells.slice(0, LIMITS.spells);
-	if (spells.length > 0) {
-		lines.push("Saved commands for similar words:");
-		for (const spell of spells) {
-			lines.push(
+	const recent = packet.recentCommands
+		.slice(-LIMITS.recentCommands)
+		.map(command => `  ${clip(command.replace(/\s+/g, " "), LIMITS.recentCommand)}`);
+	const spells = packet.spells
+		.slice(0, LIMITS.spells)
+		.map(
+			spell =>
 				`  ${clip(spell.words.replace(/\s+/g, " "), LIMITS.spellWords)} → ${clip(spell.command.replace(/\s+/g, " "), LIMITS.spellCommand)}`,
-			);
-		}
+		);
+	const tail = ["", `Description: ${clip(packet.description.replace(/\s+/g, " ").trim(), LIMITS.description)}`];
+	const room = REQUEST_BUDGET - Buffer.byteLength(buildSystemPrompt(packet.shell));
+	const assemble = (): string => {
+		const lines = [...head];
+		if (hosts) lines.push(`SSH host aliases: ${hosts}`);
+		if (recent.length > 0) lines.push("Recent ! commands (oldest first):", ...recent);
+		if (spells.length > 0) lines.push("Saved commands for similar words:", ...spells);
+		return [...lines, ...tail].join("\n");
+	};
+	let message = assemble();
+	while (Buffer.byteLength(message) > room && (recent.length > 0 || spells.length > 0 || hosts)) {
+		if (recent.length > 0) recent.shift();
+		else if (spells.length > 0) spells.pop();
+		else hosts = "";
+		message = assemble();
 	}
-	lines.push("");
-	lines.push(`Description: ${clip(packet.description.replace(/\s+/g, " ").trim(), LIMITS.description)}`);
-	return lines.join("\n");
+	return message;
 }
 
 /** Pull the answer out of the model's reply: JSON (fenced or not), else the first code line. */
@@ -113,9 +136,9 @@ export function parseAnswer(reply: string): CastAnswer | undefined {
 	return { command: cleanCommand(line), explain: "", destructive: false };
 }
 
-/** One line, no leading `$ `, `!` or backticks around it. */
+/** The command without a leading `$ `, `!` or backticks around it; a multi-line command keeps its lines. */
 function cleanCommand(command: string): string {
-	let out = command.replace(/\r?\n+/g, " ").trim();
+	let out = command.replace(/\r\n?/g, "\n").trim();
 	out = out.replace(/^`+|`+$/g, "").trim();
 	out = out.replace(/^(\$|!!?)\s*/, "");
 	return out;

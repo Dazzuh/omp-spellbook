@@ -111,6 +111,21 @@ describe("? and ??", () => {
 		expect(h.state.text).toBe("my own text");
 		expect(h.display.frame).toBeUndefined();
 	});
+
+	test("Enter mid-morph never sends a half-drawn command: it finishes the morph and waits", async () => {
+		h.submit("? list files here");
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		for (let i = 0; i < 3; i++) h.state.timers.shift()!();
+		const halfDrawn = h.state.text;
+		expect(halfDrawn).not.toBe("!ls -la");
+		// omp clears the editor, then asks the input hook; handled means nothing is sent or run.
+		expect(h.submit(halfDrawn)).toEqual({ handled: true });
+		expect(h.state.text).toBe("!ls -la");
+		expect(h.state.timers).toHaveLength(0);
+		expect(h.display.frame).toBeUndefined();
+		// The next Enter is the user's: the full command passes through to omp.
+		expect(h.submit("!ls -la")).toBeUndefined();
+	});
 });
 
 describe("destructive commands", () => {
@@ -219,6 +234,19 @@ describe("spellbook file and Tab", () => {
 		h.submit("never mind, explain the repo");
 		h.book.onUserBash("ls");
 		expect(fs.existsSync(path.join(h.dir, "book.json"))).toBe(false);
+	});
+
+	test("an edited command is saved as sent; a command for another program is not", async () => {
+		h.submit("? list files here");
+		await h.flush();
+		h.submit("!ls -la src");
+		h.book.onUserBash("ls -la src");
+		h.submit("? list files here");
+		await h.flush();
+		h.submit("!git status");
+		h.book.onUserBash("git status");
+		const book = JSON.parse(fs.readFileSync(path.join(h.dir, "book.json"), "utf8"));
+		expect(book.spells.map((s: { command: string }) => s.command)).toEqual(["ls -la src"]);
 	});
 
 	test("an unreadable spellbook is reported and never overwritten", async () => {

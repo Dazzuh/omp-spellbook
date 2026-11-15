@@ -112,21 +112,28 @@ export function detectShell(probe: ShellProbe): ShellInfo {
 	else if (name.includes("bash")) family = "bash";
 	else family = "sh";
 
+	// omp 18.20.2 (exec/bash-executor.ts) runs bash `!` lines, and the Windows no-bash fallback, in its
+	// embedded bash engine, whose builtins cover the common tools on every OS; zsh and fish run for real.
+	const builtins =
+		"omp's embedded shell has these built in on every OS: ls, find, grep, sed, awk, cat, head, tail, wc, sort, uniq, cut, tr, xargs, tee, mkdir, rm, mv, cp, date, jq.";
 	if (platform === "win32") {
 		if (name === "cmd.exe" || name === "cmd" || name.startsWith("powershell") || name.startsWith("pwsh")) {
 			// omp never wraps `!` lines in cmd.exe; its embedded POSIX shell runs them.
-			shell = "omp's embedded POSIX shell (no bash found)";
+			shell = "omp's embedded POSIX shell (no Git Bash found)";
 			family = "sh";
 			notes.push(
-				"No Git Bash: only Windows programs on PATH exist (no ls, grep, find, sed, awk, head, tail, wc).",
-				"Use POSIX shell syntax around Windows programs, e.g. `where`, `findstr`, `tasklist`, `ipconfig`, or `powershell -NoProfile -Command \"...\"` for anything else.",
+				builtins,
+				"No Git Bash: any other program must be a Windows one on PATH, e.g. `where`, `tasklist`, `ipconfig`, or `powershell -NoProfile -Command \"...\"`.",
 			);
 		} else {
 			notes.push(
-				"Windows with Git Bash: GNU coreutils, grep, sed, awk and find are available; Windows programs on PATH run too.",
+				builtins,
+				"Windows with Git Bash: lines run in omp's embedded bash engine, not a Git Bash process, so MSYS-only extras (`pwd -W`, `cygpath`) fail; `pwd` already prints a Windows path. Git Bash programs and Windows programs on PATH run too.",
 				"Paths: write C:/Users/... or /c/Users/...; quote paths with spaces.",
 			);
 		}
+	} else if (family === "bash") {
+		notes.push(builtins);
 	}
 	return { platform, shell, family, notes };
 }

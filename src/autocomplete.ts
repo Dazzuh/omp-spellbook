@@ -84,6 +84,8 @@ export function wrapAutocomplete<P extends CompletionProvider>(current: P, deps:
 		},
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
 			const pick = shown.get(item.value);
+			// A spell row from an older list: insert nothing rather than the internal `spellbook:N` value.
+			if (!pick && item.value.startsWith(VALUE_PREFIX)) return { lines, cursorLine, cursorCol };
 			if (!pick) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 			return { lines, cursorLine, cursorCol, onApplied: () => deps.onPick(pick) };
 		},

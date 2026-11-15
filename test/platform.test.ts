@@ -39,11 +39,13 @@ describe("detectShell (mirrors omp 18.20.2)", () => {
 		expect(info.shell).toBe("C:\\scoop\\shims\\bash.exe");
 	});
 
-	test("Windows without bash: cmd.exe fallback means POSIX lines with Windows programs only", () => {
+	test("Windows without bash: the embedded shell's builtins plus Windows programs", () => {
 		const info = detectShell(probe({ platform: "win32", env: { ComSpec: "C:\\Windows\\system32\\cmd.exe" } }));
 		expect(info.family).toBe("sh");
 		expect(info.shell).toContain("embedded POSIX shell");
-		expect(info.notes.join(" ")).toContain("no ls");
+		const notes = info.notes.join(" ");
+		expect(notes).toContain("built in on every OS: ls, find, grep");
+		expect(notes).toContain("Windows one on PATH");
 	});
 
 	test("Unix: $SHELL zsh or fish wins for ! lines; a shellPath setting overrides everything", () => {
@@ -93,6 +95,14 @@ describe("destructiveReason", () => {
 			"del /s /q build",
 			"powershell -NoProfile -Command \"Remove-Item -Recurse build\"",
 			"sudo systemctl restart wings",
+			"del notes.txt",
+			"/bin/rm -rf build",
+			"\\rm -rf build",
+			'"rm" -rf build',
+			"find . -name '*.tmp' | xargs rm",
+			"sed -i 's/a/b/' config.yml",
+			"echo hi | tee out.txt",
+			"mv draft.md final.md",
 		]) {
 			expect(destructiveReason(command)).toBeString();
 		}
@@ -107,6 +117,9 @@ describe("destructiveReason", () => {
 			"find . -name package.json",
 			"journalctl -u wings -n 50",
 			"echo a => b",
+			"echo hi | tee -a log.txt",
+			"sed 's/a/b/' config.yml",
+			"ls ~/Documents/rmdirs",
 		]) {
 			expect(destructiveReason(command)).toBeUndefined();
 		}

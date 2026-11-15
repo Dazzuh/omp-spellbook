@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { pickModel, replyText } from "../src/model";
-import type { ShellInfo } from "../src/platform";
-import { buildSystemPrompt, buildUserMessage, type ContextPacket, parseAnswer } from "../src/prompt";
+import { detectShell, type ShellInfo } from "../src/platform";
+import { buildSystemPrompt, buildUserMessage, type ContextPacket, parseAnswer, REQUEST_BUDGET } from "../src/prompt";
 
 const BASH: ShellInfo = { platform: "linux", shell: "/bin/bash", family: "bash", notes: [] };
 const GIT_BASH: ShellInfo = {
@@ -12,20 +12,33 @@ const GIT_BASH: ShellInfo = {
 };
 
 describe("request size", () => {
-	test("stays under 4 KB even with every list overfull and oversized", () => {
-		const long = "x".repeat(5000);
+	test("stays under 4 KB in UTF-8 bytes even with every list overfull and multi-byte text", () => {
+		// 3- and 4-byte characters: a cap counted in UTF-16 units would let these through at 2-4x.
+		const long = "語😀".repeat(3000);
+		const shell = detectShell({
+			platform: "win32",
+			env: {},
+			exists: () => false,
+			which: () => undefined,
+			ompShell: "C:\\Program Files\\Git\\bin\\bash.exe",
+		});
 		const packet: ContextPacket = {
 			description: `delete ${long}`,
 			cwd: `C:/${long}`,
 			os: "Windows 10.0.26200",
-			shell: GIT_BASH,
-			sshHosts: Array.from({ length: 200 }, (_, i) => `host-${i}-${long}`),
+			shell,
+			sshHosts: Array.from({ length: 200 }, (_, i) => `host-${i}`),
 			recentCommands: Array.from({ length: 100 }, (_, i) => `echo ${i} ${long}`),
 			spells: Array.from({ length: 50 }, (_, i) => ({ words: `words ${i} ${long}`, command: `cmd ${i} ${long}` })),
 		};
-		const bytes =
-			Buffer.byteLength(buildSystemPrompt(packet.shell), "utf8") + Buffer.byteLength(buildUserMessage(packet), "utf8");
-		expect(bytes).toBeLessThan(4096);
+		const message = buildUserMessage(packet);
+		const bytes = Buffer.byteLength(buildSystemPrompt(packet.shell), "utf8") + Buffer.byteLength(message, "utf8");
+		expect(bytes).toBeLessThanOrEqual(REQUEST_BUDGET);
+		expect(REQUEST_BUDGET).toBeLessThan(4096);
+		// Cuts land on code points: no lone surrogate halves.
+		expect(message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+		expect(message).toContain("Description: delete 語😀");
+		expect(message).toContain("Note: omp's embedded shell has these built in");
 	});
 
 	test("a typical request is well under 2 KB and carries no conversation", () => {
@@ -62,8 +75,8 @@ describe("parseAnswer", () => {
 		}
 	});
 
-	test("strips a leading $, ! or backticks and joins lines", () => {
-		expect(parseAnswer('{"command":"$ ls\\n-la","explain":"x"}')?.command).toBe("ls -la");
+	test("strips a leading $, ! or backticks; a multi-line command keeps its lines", () => {
+		expect(parseAnswer('{"command":"$ cd build\\r\\nrm -rf out","explain":"x"}')?.command).toBe("cd build\nrm -rf out");
 		expect(parseAnswer('{"command":"!git status"}')?.command).toBe("git status");
 		expect(parseAnswer("`du -sh .`")?.command).toBe("du -sh .");
 	});

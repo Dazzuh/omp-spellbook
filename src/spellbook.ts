@@ -50,6 +50,8 @@ export function plainWordsLine(answer: CastAnswer, paint: (color: string, text: 
 export class Spellbook {
 	#pending: Pending | undefined;
 	#morphTimer: unknown;
+	/** The text the running morph ends on; set only while frames are still to come. */
+	#morphTarget: string | undefined;
 	#castAbort: AbortController | undefined;
 
 	constructor(readonly deps: SpellbookDeps) {}
@@ -65,25 +67,39 @@ export class Spellbook {
 	}
 
 	/**
-	 * The `input` hook: a `?`/`??` line is taken (returns `{ handled: true }`); a `!` line keeps a
-	 * pending spell for `user_bash` to save; anything else drops it.
+	 * The `input` hook: a `?`/`??` line is taken (returns `{ handled: true }`); Enter during a morph
+	 * is taken too and finishes the morph, so a half-drawn command never runs; a `!` line keeps a
+	 * pending spell for `user_bash` to save; anything else drops it and any cast still in flight.
 	 */
 	onInput(text: string): { handled: true } | undefined {
+		const target = this.#morphTarget;
+		if (target !== undefined) {
+			this.#stopMorph();
+			this.deps.ui.setText(target);
+			return { handled: true };
+		}
 		const cast = parseCast(text);
 		if (cast) {
 			void this.cast(cast);
 			return { handled: true };
 		}
+		this.#castAbort?.abort();
 		if (!parseShellLine(text)) this.#pending = undefined;
 		this.deps.ui.setLine(undefined);
 		return undefined;
 	}
 
-	/** The `user_bash` hook: save the command that was sent under the words that asked for it. */
+	/**
+	 * The `user_bash` hook: save the command that was sent under the words that asked for it. An
+	 * edited command is saved as sent; a command for another program is not the spell's answer.
+	 */
 	onUserBash(command: string): void {
 		const pending = this.#pending;
 		this.#pending = undefined;
 		if (!pending || !command.trim()) return;
+		const [sentProgram] = command.trim().split(/\s+/, 1);
+		const [spellProgram] = pending.command.trim().split(/\s+/, 1);
+		if (sentProgram !== spellProgram) return;
 		const file = this.deps.bookFile();
 		try {
 			writeBook(file, addSpell(readBook(file), pending.words, command));
@@ -136,7 +152,7 @@ export class Spellbook {
 		this.#castAbort?.abort();
 		this.#pending = { words: pick.words, sigil: pick.sigil, command: pick.command };
 		this.deps.ui.setLine(plainWordsLine({ command: pick.command, explain: `Saved for "${pick.words}".`, destructive: false }, this.deps.paint));
-		this.morph(pick.from, `${pick.sigil}${pick.command}`);
+		this.morph(this.deps.ui.getText(), `${pick.sigil}${pick.command}`);
 	}
 
 	/** Play the configured morph from `from` to `to`; with motion off, jump straight to `to`. */
@@ -151,11 +167,12 @@ export class Spellbook {
 			this.#morphTimer = undefined;
 			if (ui.getText() !== shown) {
 				// Typed over mid-morph: stop and leave the user's text alone.
-				this.#endFrame();
+				this.#stopMorph();
 				return;
 			}
 			const frame = frames[index++]!;
 			const last = index >= frames.length;
+			this.#morphTarget = last ? undefined : to;
 			display.frame = last ? undefined : frame;
 			display.editor?.invalidate();
 			ui.setText(frame.text);
@@ -173,6 +190,7 @@ export class Spellbook {
 	#stopMorph(): void {
 		if (this.#morphTimer !== undefined) this.deps.clearTimeout(this.#morphTimer);
 		this.#morphTimer = undefined;
+		this.#morphTarget = undefined;
 		this.#endFrame();
 	}
 

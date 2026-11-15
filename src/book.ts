@@ -52,10 +52,12 @@ export function readBook(file: string): Book {
 	}
 	const spells = Array.isArray((parsed as Book | undefined)?.spells) ? (parsed as Book).spells : undefined;
 	if (!spells) throw new BookReadError(file, new Error('expected { "spells": [...] }'));
+	// One bad entry makes the whole file unreadable: dropping it here would delete it on the next save.
+	const bad = spells.findIndex(s => !s || typeof s.words !== "string" || typeof s.command !== "string");
+	if (bad !== -1) throw new BookReadError(file, new Error(`spell ${bad + 1} needs "words" and "command" strings`));
 	return {
 		version: 1,
 		spells: spells
-			.filter(s => s && typeof s.words === "string" && typeof s.command === "string")
 			.map(s => ({
 				words: s.words,
 				command: s.command,

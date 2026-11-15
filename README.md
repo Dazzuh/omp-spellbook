@@ -2,19 +2,20 @@
 
 Forget the flags, keep the words. Spellbook is an [omp](https://omp.sh) plugin: type `?` and what you want in
 plain words, and the shell command morphs into the composer as `!<command>`. You read it, edit it if you like, and
-press Enter. Nothing runs until you do.
+press Enter. Nothing runs until you do; Enter while the morph is still playing only finishes it.
 
 ![Typing "? find files bigger than 1 MB under here" turns into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
 
 - `? <description>` → `!<command>` (runs in your shell, output goes to the model's context, as omp's `!` does)
 - `?? <description>` → `!!<command>` (output kept out of the model's context)
 - A line under the composer says in plain words what the command does, with a **⚠ Destructive** warning when it
-  deletes, overwrites, force-pushes or stops something.
+  deletes, moves over, overwrites, force-pushes or stops something (a local check of the command, plus the model's
+  own flag).
 - Every command you send after a `?` is saved in your **spellbook** under your own words. Next time, type `?` and a
   few of those words and press **Tab**: pick the saved command, no model call.
 
-Works on Windows, Linux and macOS, with stock omp 18.20.2 or later, in any terminal; in [Tern](https://tern.sh) the
-morph is drawn in colour.
+Works on Windows, Linux and macOS, with stock omp 18.20.2 or later, in any terminal; the morph is drawn in colour in
+Tern and in omp's ANSI renderer alike.
 
 ## Install
 
@@ -26,9 +27,10 @@ You need omp 18.20.2 or later and `git` on your PATH.
 omp plugin install github:Dazzuh/omp-spellbook
 ```
 
-Install [Git for Windows](https://git-scm.com/download/win) if you don't have it: omp's `!` commands run in its Git
-Bash, so Spellbook writes Bash commands with Windows paths in mind. Without Git Bash, omp still runs `!` lines with
-its built-in POSIX shell, and Spellbook sticks to programs Windows has (`where`, `findstr`, `powershell -Command`).
+omp runs `!` lines in its own embedded bash engine, which has the common tools built in (`ls`, `find`, `grep`, `sed`,
+`awk`, `head`, `wc` and more), so Spellbook writes Bash commands on Windows too. With
+[Git for Windows](https://git-scm.com/download/win) installed, omp loads Git Bash's setup and its programs; without it,
+anything beyond the built-ins has to be a Windows program (`where`, `tasklist`, `powershell -Command`).
 
 **Linux and macOS**:
 
@@ -36,7 +38,8 @@ its built-in POSIX shell, and Spellbook sticks to programs Windows has (`where`,
 omp plugin install github:Dazzuh/omp-spellbook
 ```
 
-Commands are written for the shell omp's `!` uses: your `$SHELL` when it is bash, zsh or fish, else bash or sh.
+Commands are written for the shell omp's `!` uses: your `$SHELL` when it is zsh or fish (omp runs those for real),
+else omp's embedded bash engine with your bash setup loaded.
 
 Restart omp (or open a new session) and run `/spellbook` to see what it picked: style, spellbook file, model and
 shell.
@@ -63,9 +66,10 @@ Any model you are logged in to works (`/login`, or the provider's API key in the
 ### What the model sees
 
 Only a small packet, never your conversation: the description, the working folder, the OS, the shell `!` runs in
-(plus notes such as "Git Bash: coreutils available"), your SSH host aliases from `~/.ssh/config` (names only), your
-last few `!` commands in this session, and up to four saved spells with similar words. The whole request stays under
-4 KB.
+(plus notes such as which tools omp's shell has built in), your SSH host aliases from `~/.ssh/config` (names only),
+your last few `!` commands in this session, and up to four saved spells with similar words. The whole request is
+capped at 4,000 bytes: when it would be bigger, the oldest recent commands go first, then saved spells, then host
+aliases.
 
 ## Settings
 
@@ -105,8 +109,9 @@ A plain JSON file you can read, edit, copy between machines or keep in your dotf
 }
 ```
 
-The command saved is the one you actually sent, edits included. If the file stops being valid JSON, Spellbook warns
-you and leaves it alone rather than overwrite your edits.
+The command saved is the one you actually sent, edits included, as long as it still starts with the same program;
+a different command typed instead isn't filed under those words. If the file stops being valid (bad JSON, or a spell
+without `words` and `command`), Spellbook warns you and leaves it alone rather than overwrite your edits.
 
 `/spellbook list [words]` shows saved spells; `/spellbook cast <description>` is the same as typing `? <description>`
 (and prints the answer as JSON when omp runs headless, `omp -p`).

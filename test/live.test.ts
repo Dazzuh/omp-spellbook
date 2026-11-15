@@ -1,6 +1,7 @@
 /**
  * Live check against a real model through stock omp: each description becomes a command via
- * `omp -p "/spellbook cast …"`, and the command runs in the shell omp's `!` uses on this machine.
+ * `omp -p "/spellbook cast …"`, and the command runs through omp's own `!` executor
+ * (`executeBash` with `useUserShell`, exactly what Enter on a `!` line calls).
  *
  * Runs only with SPELLBOOK_LIVE=1 (it spends tokens). Options:
  * - SPELLBOOK_OMP: how to start omp (default `bun x @oh-my-pi/pi-coding-agent@18.20.2`)
@@ -10,7 +11,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { detectShell, liveProbe } from "../src/platform";
+// Test-only deep import of the devDependency: the plugin itself never runs commands.
+import { executeBash } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
 
 const LIVE = process.env.SPELLBOOK_LIVE === "1";
 const REPO = path.resolve(import.meta.dir, "..");
@@ -57,13 +59,10 @@ function overlay(roles: Record<string, string>): string[] {
 	return ["--config", file];
 }
 
-/** Run a command the way omp's `!` would: the detected shell, as a login shell for bash/zsh. */
-function runInShell(command: string): { code: number | null; out: string } {
-	const shell = detectShell(liveProbe());
-	if (shell.shell.includes("embedded")) throw new Error("no bash on this machine; run with Git Bash installed");
-	const args = shell.family === "fish" ? ["-c", command] : ["-l", "-c", command];
-	const proc = Bun.spawnSync([shell.shell, ...args], { cwd: REPO, timeout: 60_000, windowsHide: true });
-	return { code: proc.exitCode, out: proc.stdout.toString() + proc.stderr.toString() };
+/** Run a command exactly as omp's `!` does: its executor, the user's shell, the repo as cwd. */
+async function runInShell(command: string): Promise<{ code: number | undefined; out: string }> {
+	const result = await executeBash(command, { cwd: REPO, useUserShell: true, timeout: 60_000 });
+	return { code: result.exitCode, out: result.output };
 }
 
 const DESCRIPTIONS: ReadonlyArray<readonly [string, RegExp]> = [
@@ -76,10 +75,10 @@ const DESCRIPTIONS: ReadonlyArray<readonly [string, RegExp]> = [
 
 describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 	for (const [description, expected] of DESCRIPTIONS) {
-		test(`"${description}" works in the ! shell`, () => {
+		test(`"${description}" works in the ! shell`, async () => {
 			const answer = cast(description, overlay({ spellbook: MODEL }));
 			expect(answer.model).toBe(MODEL);
-			const result = runInShell(answer.command);
+			const result = await runInShell(answer.command);
 			console.log(`${process.platform} | ${description} → ${answer.command}`);
 			if (result.code !== 0 || !expected.test(result.out)) {
 				throw new Error(`command: ${answer.command}\nexit: ${result.code}\noutput:\n${result.out}`);
