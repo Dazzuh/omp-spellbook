@@ -80,8 +80,11 @@ export function hookEditor(
 	const baseTsp = editor.describeDecorations;
 	editor.describeDecorations = lines => {
 		const frame = display.frame;
-		if (frame) return frame.marks.map(mark => ({ from: mark.from, to: mark.to, s: MARK_COLOR[mark.kind] }));
-		return baseTsp ? baseTsp.call(editor, lines) : [];
+		if (!frame) return baseTsp ? baseTsp.call(editor, lines) : [];
+		const decor = frame.marks.map(mark => ({ from: mark.from, to: mark.to, s: MARK_COLOR[mark.kind] }));
+		// Like omp's own shell mode: the `!`/`!!` sigil hides behind the bash pill.
+		const sigil = /^!!?/.exec(frame.text)?.[0].length ?? 0;
+		return sigil > 0 ? [{ from: 0, to: sigil, s: "hide" }, ...decor] : decor;
 	};
 	const baseDescribe = editor.describe;
 	editor.describe = function (this: HookableEditor, cx) {

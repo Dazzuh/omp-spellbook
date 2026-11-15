@@ -45,9 +45,8 @@ describe("morphFrames", () => {
 		expect(frames.length).toBeGreaterThan(10);
 		const kinds = new Set(frames.flatMap(f => f.marks.map(m => m.kind)));
 		expect(kinds).toEqual(new Set(["gone", "new"]));
-		// The sigil switches from ? to ! halfway, which turns omp's bash pill on.
-		expect(frames.some(f => f.text.startsWith("? "))).toBe(true);
-		expect(frames.some(f => f.text.startsWith("!") && f !== frames.at(-1))).toBe(true);
+		// The ? stays until the final frame, so omp's bash mode can't repaint the colours mid-morph.
+		expect(frames.slice(0, -1).every(f => f.text.startsWith("? "))).toBe(true);
 	});
 
 	test("decode (B) sweeps noise glyphs; rewind (C) erases then types", () => {

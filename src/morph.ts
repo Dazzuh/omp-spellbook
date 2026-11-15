@@ -93,7 +93,9 @@ function diffFrames(from: string, to: string): Frame[] {
 		const dCut = Math.round(dels * Math.min(1, s / (steps * 0.55)));
 		const iCut = Math.round(ins * Math.max(0, (s - steps * 0.35) / (steps * 0.65)));
 		const out = new FrameBuilder();
-		out.push(s < steps / 2 ? fromSigil : toSigil);
+		// The `?` stays until the last frame: once the line starts with `!`, omp's bash mode hands the
+		// colours to the terminal's syntax highlighter and the red/green would vanish mid-morph.
+		out.push(s < steps ? fromSigil : toSigil);
 		let d = 0;
 		let k = 0;
 		for (const op of ops) {

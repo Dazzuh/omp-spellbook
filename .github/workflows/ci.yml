@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      OMP_VERSION: 18.20.2
+      MODEL: anthropic/claude-haiku-5-5
+      # Optional repository secret: without it the live model step is skipped.
+      LIVE_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.x
+
+      - name: Install dev dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Install stock omp ${{ env.OMP_VERSION }}
+        shell: bash
+        run: |
+          bun add -g @oh-my-pi/pi-coding-agent@${OMP_VERSION}
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      # `/spellbook` runs locally; print mode only needs some model selected, so a placeholder key will do.
+      - name: Load check (stock omp, no other extensions)
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: sk-ant-load-check-placeholder
+        run: |
+          omp --version
+          out=$(omp --no-extensions -e . --model "$MODEL" -p "/spellbook" 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -q "Tab on a \`?\` line" <<<"$out"
+
+      - name: Install from GitHub the way the README says
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: sk-ant-load-check-placeholder
+        run: |
+          omp plugin install "github:${GITHUB_REPOSITORY}#${GITHUB_SHA}"
+          omp plugin list | tee plugins.txt
+          grep -q "omp-spellbook" plugins.txt
+          out=$(omp --model "$MODEL" -p "/spellbook" 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -q "Tab on a \`?\` line" <<<"$out"
+
+      - name: Live commands in this OS's ! shell
+        if: env.LIVE_KEY != ''
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ env.LIVE_KEY }}
+          SPELLBOOK_LIVE: "1"
+          SPELLBOOK_OMP: omp
+          SPELLBOOK_MODEL: ${{ env.MODEL }}
+        run: bun test test/live.test.ts
