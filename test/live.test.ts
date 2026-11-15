@@ -61,6 +61,9 @@ interface PromptCast {
 	explain: string;
 	warnings: string[];
 	model: string;
+	picks?: { docs: string[]; settings: string[]; keywords: string[] };
+	ms: number;
+	mapBytes: number;
 }
 
 function overlay(roles: Record<string, string>): string[] {
@@ -128,5 +131,63 @@ describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 		expect(answer.kind).toBe("setting");
 		expect(answer.text).toMatch(/^!omp config set compaction\.\S+ \S+/);
 		expect(answer.warnings).toEqual([]);
+	}, 240_000);
+});
+
+describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
+	test("'stop it forgetting stuff in long chats' reaches compaction", () => {
+		const description = "stop it forgetting stuff in long chats";
+		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
+		console.log(
+			JSON.stringify({
+				description,
+				kind: answer.kind,
+				text: answer.text,
+				picks: answer.picks,
+				ms: answer.ms,
+				mapBytes: answer.mapBytes,
+			}),
+		);
+		const reached =
+			answer.picks?.docs.includes("compaction.md") ||
+			answer.picks?.settings.some(id => id.startsWith("compaction.")) ||
+			/compact/i.test(answer.text);
+		expect(Boolean(reached)).toBe(true);
+	}, 240_000);
+
+	test("'get a bunch of helpers to check every file for bugs at once' gets orchestrate", () => {
+		const description = "get a bunch of helpers to check every file for bugs at once";
+		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
+		console.log(
+			JSON.stringify({
+				description,
+				kind: answer.kind,
+				text: answer.text,
+				picks: answer.picks,
+				ms: answer.ms,
+				mapBytes: answer.mapBytes,
+			}),
+		);
+		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
+	}, 240_000);
+
+	test("'make the agent stop asking me before it edits files' reaches tools.approvalMode", () => {
+		const description = "make the agent stop asking me before it edits files";
+		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
+		console.log(
+			JSON.stringify({
+				description,
+				kind: answer.kind,
+				text: answer.text,
+				picks: answer.picks,
+				ms: answer.ms,
+				mapBytes: answer.mapBytes,
+			}),
+		);
+		const reached =
+			answer.picks?.settings.includes("tools.approvalMode") ||
+			answer.text.includes("tools.approvalMode") ||
+			/approval/i.test(answer.text);
+		expect(Boolean(reached)).toBe(true);
 	}, 240_000);
 });

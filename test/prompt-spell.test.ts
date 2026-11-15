@@ -1,24 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { buildCatalogue, type Catalogue, type CatalogueSources, DOC_PAGE_BYTES } from "../src/catalogue";
+import { buildCatalogue, type Catalogue, type CatalogueSources, DOC_PAGE_BYTES, MAX_DOC_PAGES, type SettingEntry } from "../src/catalogue";
+import type { OmpMap } from "../src/omp-map";
 import {
 	buildPromptRequest,
 	castPrompt,
 	hasKeyword,
-	keywordHints,
-	matchSettings,
-	pickDocPages,
+	MAX_PICK_SETTINGS,
+	parsePicks,
 	PROMPT_REQUEST_BUDGET,
-	type PromptRequest,
 	parsePromptReply,
+	type PromptRequest,
 } from "../src/prompt-spell";
 
 const INSTALLED = ["kata", "git-workflow-and-versioning", "tarkov-wiki"];
 const KEYWORDS = [
-	{ id: "ultrathink", word: "ultrathink" },
-	{ id: "chillax", word: "chillax" },
-	{ id: "orchestrate", word: "orchestrate" },
-	{ id: "workflow", word: "workflowz" },
-	{ id: "jevify", word: "jevify" },
+	{
+		id: "ultrathink",
+		word: "ultrathink",
+		description: "Make the agent reason deeply before it answers",
+		notice: () => "Think hard before answering.",
+	},
+	{ id: "chillax", word: "chillax", description: "Keep the answer short and low-effort" },
+	{
+		id: "orchestrate",
+		word: "orchestrate",
+		description: "Let standalone orchestrate append its hidden multi-agent orchestration notice",
+	},
+	{ id: "workflow", word: "workflowz", description: "Run the work as a scripted multi-step workflow from the eval kernel" },
+	{ id: "jevify", word: "jevify", description: "Classify many items in bulk through the judge" },
 ];
 const DOCS: Record<string, string> = {
 	"compaction.md": "# Compaction\n\nWhen the context fills, omp summarises older turns.",
@@ -60,20 +69,52 @@ function catalogue(options: { off?: string[]; overrides?: Partial<CatalogueSourc
 	});
 }
 
-/** Run a cast against a scripted model reply; returns the landed answer and the one request sent. */
-async function cast(description: string, reply: unknown, cat: Catalogue = catalogue()) {
+/** omp's map as the fixture catalogue sees it: page summaries, settings, enabled keywords, skills and commands. */
+function ompMap(cat: Catalogue = catalogue(), overrides: Partial<OmpMap> = {}): OmpMap {
+	return {
+		docs: [
+			{ name: "compaction.md", title: "Compaction", sentence: "When the context fills, omp summarises older turns." },
+			{ name: "magic-keywords.md", title: "Magic keywords", sentence: "Standalone words in a prompt switch a mode on." },
+			{ name: "natives-architecture.md", title: "Natives", sentence: "How omp's native helpers are built." },
+			{ name: "settings.md", title: "Settings", sentence: "Every setting omp reads from its config." },
+			{ name: "skills.md", title: "Skills", sentence: "How skills are found and loaded." },
+		],
+		settings: cat.settings,
+		keywords: cat.keywordInfo,
+		skills: cat.skills,
+		commands: cat.commands,
+		...overrides,
+	};
+}
+
+const NO_PICKS = JSON.stringify({ docs: [], settings: [], keywords: [] });
+
+/**
+ * Run a cast against scripted replies: the first reply answers the pick call, the second the write
+ * call. Returns the landed answer and both requests.
+ */
+async function cast(
+	description: string,
+	write: unknown,
+	cat: Catalogue = catalogue(),
+	pick: unknown = NO_PICKS,
+	map: OmpMap = ompMap(cat),
+) {
+	const replies = [pick, write];
 	const requests: PromptRequest[] = [];
 	const answer = await castPrompt(
 		description,
 		cat,
+		map,
 		async request => {
 			requests.push(request);
+			const reply = replies.shift();
 			return typeof reply === "string" ? reply : JSON.stringify(reply);
 		},
 		id => cat.settings.some(s => s.id === id),
 	);
-	expect(requests).toHaveLength(1);
-	return { answer, request: requests[0]! };
+	expect(requests).toHaveLength(2);
+	return { answer, pick: requests[0]!, request: requests[1]! };
 }
 
 describe("skills are named as skill://<name>, installed ones only", () => {
@@ -118,60 +159,80 @@ describe("skills are named as skill://<name>, installed ones only", () => {
 	});
 });
 
-describe("magic keywords", () => {
-	test("a description that fits a keyword produces it, even when the model leaves it out", async () => {
+describe("magic keywords come from the first call's picks", () => {
+	test("a picked keyword reaches the write call with omp's description, and lands as written", async () => {
+		const description = "get a few agents to review this repo in parallel";
+		const { answer, pick, request } = await cast(
+			description,
+			{ kind: "prompt", text: "orchestrate a review of this repo." },
+			catalogue(),
+			JSON.stringify({ keywords: ["orchestrate"] }),
+		);
+		expect(pick.user).toContain("- orchestrate: Let standalone orchestrate append its hidden multi-agent orchestration notice");
+		expect(request.user).toContain(
+			"Magic keywords that fit:\n- orchestrate: Let standalone orchestrate append its hidden multi-agent orchestration notice",
+		);
+		expect(answer).toMatchObject({ kind: "prompt", text: "orchestrate a review of this repo.", warnings: [] });
+		expect(answer.picks).toEqual({ docs: [], settings: [], keywords: ["orchestrate"] });
+	});
+
+	test("a keyword the first call did not pick is neither offered nor added", async () => {
 		const description = "get a few agents to review this repo in parallel";
 		const { answer, request } = await cast(description, { kind: "prompt", text: "Review this repo." });
-		expect(request.user).toContain("Keywords this description asks for: orchestrate");
-		expect(hasKeyword(answer.text, "orchestrate")).toBe(true);
-		// The model's own use is kept as written, never doubled.
-		const kept = await cast(description, { kind: "prompt", text: "orchestrate a review of this repo." });
-		expect(kept.answer.text).toBe("orchestrate a review of this repo.");
-		// "Orchestrate" at a sentence start is no keyword to omp: it is lowercased, not repeated.
-		const capital = await cast(description, { kind: "prompt", text: "Orchestrate a review of this repo." });
-		expect(capital.answer.text).toBe("orchestrate a review of this repo.");
+		expect(request.user).not.toContain("Magic keywords that fit:");
+		expect(answer.text).toBe("Review this repo.");
+		expect(answer.picks?.keywords).toEqual([]);
 	});
 
-	test("the system prompt lists only the enabled keywords", async () => {
-		const { request } = await cast("review this", { kind: "prompt", text: "Review." }, catalogue({ off: ["magicKeywords.jevify"] }));
-		expect(request.system).toContain("orchestrate:");
-		expect(request.system).not.toContain("jevify");
+	test("a picked keyword is named beside the description, and a capitalised one lands lowercase", async () => {
+		const pickReply = JSON.stringify({ keywords: ["orchestrate"] });
+		const { answer, request } = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Orchestrate the review: split the repo, then report." },
+			catalogue(),
+			pickReply,
+		);
+		expect(request.user.endsWith("as a standalone lowercase word: orchestrate")).toBe(true);
+		expect(answer.text).toBe("orchestrate the review: split the repo, then report.");
+		// Unpicked, the same capitalised word is left alone.
+		const unpicked = await cast("review this repo", { kind: "prompt", text: "Orchestrate the review." });
+		expect(unpicked.answer.text).toBe("Orchestrate the review.");
 	});
 
-	for (const off of [["magicKeywords.orchestrate"], ["magicKeywords.enabled"]]) {
-		test(`with ${off[0]} off, orchestrate never appears: not asked for, not kept`, async () => {
+	test("a picked keyword with a notice carries the notice to the write call", async () => {
+		const { request } = await cast(
+			"think hard about the migration",
+			{ kind: "prompt", text: "Plan the migration." },
+			catalogue(),
+			JSON.stringify({ keywords: ["ultrathink"] }),
+		);
+		expect(request.user).toContain(
+			"- ultrathink: Make the agent reason deeply before it answers\n  What it tells the agent: Think hard before answering.",
+		);
+	});
+
+	test("the write call's system prompt carries no keyword glosses and says to use only the listed keywords", async () => {
+		const { request } = await cast("review this", { kind: "prompt", text: "Review." });
+		expect(request.system).toContain("Never use a magic keyword that is not listed there.");
+		expect(request.system).not.toContain("fanned out to several subagents");
+		for (const word of ["orchestrate", "ultrathink", "jevify"]) expect(request.system).not.toContain(word);
+	});
+
+	test("with a keyword switched off, it is never picked, offered or kept", async () => {
+		for (const off of [["magicKeywords.orchestrate"], ["magicKeywords.enabled"]]) {
 			const cat = catalogue({ off });
 			const description = "get a few agents to review this repo in parallel";
 			const { answer, request } = await cast(
 				description,
 				{ kind: "prompt", text: "orchestrate a review of this repo, then orchestrate the fixes." },
 				cat,
+				JSON.stringify({ keywords: ["orchestrate"] }),
 			);
 			expect(request.system).not.toContain("orchestrate");
 			expect(request.user).not.toContain("orchestrate");
 			expect(hasKeyword(answer.text, "orchestrate")).toBe(false);
 			expect(answer.text).toBe("a review of this repo, then the fixes.");
-		});
-	}
-
-	test("a negated or ordinary description never gets a keyword forced on", async () => {
-		const all = KEYWORDS.map(k => k.word);
-		for (const description of [
-			"do not use subagents, review the diff myself",
-			"review this without sub-agents",
-			"don't think hard about this, just rename the variable",
-			"run the unit tests in parallel",
-			"parallelize the image resize in the build script",
-			"some agents are failing the health check",
-		]) {
-			expect(keywordHints(description, all)).toEqual([]);
 		}
-		expect(keywordHints("fan the review out to subagents, then think hard about the results", all)).toEqual([
-			"ultrathink",
-			"orchestrate",
-		]);
-		const { answer } = await cast("do not use subagents, review the diff myself", { text: "Review the diff yourself." });
-		expect(answer.text).toBe("Review the diff yourself.");
 	});
 
 	test("keyword boundaries match omp's: code-ish uses are not keywords", () => {
@@ -197,13 +258,15 @@ describe("omp commands and settings", () => {
 		expect(answer.warnings).toEqual(["/frobnicate is not a command omp lists here"]);
 	});
 
-	test("a setting lands as !omp config set …, with the !", async () => {
-		const { answer, request } = await cast("turn off auto compaction", {
-			kind: "setting",
-			text: "omp config set compaction.enabled false",
-		});
+	test("a setting lands as !omp config set …, with the !, and the picked setting is offered", async () => {
+		const { answer, request } = await cast(
+			"turn off auto compaction",
+			{ kind: "setting", text: "omp config set compaction.enabled false" },
+			catalogue(),
+			JSON.stringify({ settings: ["compaction.enabled"] }),
+		);
 		expect(answer).toMatchObject({ kind: "setting", text: "!omp config set compaction.enabled false", warnings: [] });
-		expect(request.user).toContain("Matching settings (omp config set <key> <value>):");
+		expect(request.user).toContain("Settings that may fit (omp config set <id> <value>):");
 		expect(request.user).toContain("- compaction.enabled (boolean, default true): Auto-Compact: Automatically compact");
 	});
 
@@ -243,38 +306,105 @@ describe("omp commands and settings", () => {
 		expect(answer.warnings).toEqual(["omp has no setting frob.enabled"]);
 	});
 
-	test("matching settings: by id and description words, never credentials", () => {
-		const cat = catalogue();
-		expect(matchSettings(cat.settings, "turn off auto compaction").map(s => s.id)).toEqual([
-			"compaction.enabled",
-			"compaction.strategy",
-		]);
-		expect(matchSettings(cat.settings, "rotate the compaction broker token").map(s => s.id)).not.toContain(
-			"auth.broker.token",
+	test("the settings offered are the ones the first call picked, in its order, never credentials or unknown ids", async () => {
+		const { request } = await cast(
+			"stop the animations and compact early",
+			{ kind: "prompt", text: "Stop them." },
+			catalogue(),
+			JSON.stringify({ settings: ["tui.motion", "auth.broker.token", "compaction.enabled", "nope.id"] }),
 		);
-		expect(matchSettings(cat.settings, "write a haiku")).toEqual([]);
+		const at = (id: string) => request.user.indexOf(`- ${id} (`);
+		expect(at("tui.motion")).toBeGreaterThan(-1);
+		expect(at("tui.motion")).toBeLessThan(at("compaction.enabled"));
+		expect(request.user).not.toContain("auth.broker.token");
+		expect(request.user).not.toContain("nope.id");
 	});
 });
 
-describe("the request: catalogue and description only", () => {
-	test("with nothing extra to add, the request is the catalogue, then the description", async () => {
-		const cat = catalogue();
-		const { request } = await cast("write a haiku about rust", { kind: "prompt", text: "Write a haiku." }, cat);
-		expect(request.user).toBe(`${cat.render()}\n\nDescription: write a haiku about rust`);
+describe("the two calls: the map, then the picks", () => {
+	test("the first call reads omp's map: a page summary and the description, no doc page text", async () => {
+		const description = "how does compaction decide what to summarise";
+		const { pick } = await cast(description, { text: "Explain compaction." });
+		expect(pick.user).toContain("- compaction.md: Compaction. When the context fills, omp summarises older turns.");
+		expect(pick.user).toContain("Skills (skill://<name>):");
+		expect(pick.user).toContain(`Description: ${description}`);
+		expect(pick.user).not.toContain("omp doc omp://");
 	});
 
-	test("doc pages ride along only when the description names them, at most two", async () => {
-		expect(pickDocPages(Object.keys(DOCS), "how does compaction decide what to summarise")).toEqual(["compaction.md"]);
-		expect(pickDocPages(Object.keys(DOCS), "which magic keywords fit a big refactor")).toEqual(["magic-keywords.md"]);
-		expect(pickDocPages(Object.keys(DOCS), "list the files here")).toEqual([]);
-		// "natives" alone picks natives-architecture.md ("architecture" never picks a page by itself).
-		expect(pickDocPages(Object.keys(DOCS), "explain the architecture")).toEqual([]);
-		expect(pickDocPages(Object.keys(DOCS), "read omp://settings and omp://skills, compaction and magic keywords")).toHaveLength(2);
-		const { request } = await cast("how does compaction decide what to summarise", { text: "Explain compaction." });
+	test("the picks reach the write call: their page text, setting line and keyword line; not the rest", async () => {
+		const cat = catalogue({ off: ["magicKeywords.jevify"] });
+		const pick = JSON.stringify({
+			docs: ["omp://compaction"],
+			settings: ["compaction.enabled", "nope.id"],
+			keywords: ["orchestrate", "jevify"],
+		});
+		const { answer, request } = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Review this repo." },
+			cat,
+			pick,
+		);
 		expect(request.user).toContain("omp doc omp://compaction.md:\n# Compaction");
+		expect(request.user).toContain("- compaction.enabled (boolean, default true): Auto-Compact: Automatically compact");
+		expect(request.user).toContain("- orchestrate: Let standalone orchestrate append its hidden multi-agent orchestration notice");
+		expect(request.user).not.toContain("nope.id");
+		expect(request.user).not.toContain("jevify");
+		expect(answer.picks).toEqual({ docs: ["compaction.md"], settings: ["compaction.enabled"], keywords: ["orchestrate"] });
 	});
 
-	test("the request stays under its cap however big the catalogue and pages are", async () => {
+	test("a first reply that is not JSON picks nothing, and the write call still runs", async () => {
+		const { answer, request } = await cast(
+			"how does compaction decide what to summarise",
+			{ kind: "prompt", text: "Explain it." },
+			catalogue(),
+			"The compaction page, I think.",
+		);
+		expect(answer.picks).toEqual({ docs: [], settings: [], keywords: [] });
+		expect(answer.text).toBe("Explain it.");
+		expect(request.user).not.toContain("omp doc omp://");
+	});
+
+	test("doc pages ride along only when the first call picks them, at most three", async () => {
+		const { answer, request } = await cast(
+			"how does compaction decide what to summarise",
+			{ text: "Explain compaction." },
+			catalogue(),
+			JSON.stringify({
+				docs: ["omp://compaction", "compaction.md", "magic-keywords", "natives-architecture", "settings.md", "made-up"],
+			}),
+		);
+		expect(MAX_DOC_PAGES).toBe(3);
+		expect(answer.picks?.docs).toEqual(["compaction.md", "magic-keywords.md", "natives-architecture.md"]);
+		expect(request.user).toContain("omp doc omp://compaction.md:\n# Compaction");
+		expect(request.user.match(/omp doc omp:\/\//g)).toHaveLength(3);
+	});
+
+	test("the write call's user ends with the description line, and no conversation can enter", async () => {
+		const { pick, request } = await cast("write a haiku about rust", { text: "Write a haiku." });
+		for (const req of [pick, request]) expect(req.user.endsWith("\n\nDescription: write a haiku about rust")).toBe(true);
+		const plain = await cast("write a haiku about rust", { kind: "prompt", text: "Write a haiku." }, catalogue());
+		expect(plain.request.user).toBe(`${catalogue().render()}\n\nDescription: write a haiku about rust`);
+	});
+
+	test("both calls stay under the cap with a 2,000-setting map", async () => {
+		const big: SettingEntry[] = Array.from({ length: 2_000 }, (_, i) => ({
+			id: `extra.setting${i}`,
+			type: "string",
+			values: [],
+			default: "",
+			description: `Tunes part ${i} of the thing. `.repeat(12),
+		}));
+		const cat = catalogue();
+		const picks = JSON.stringify({ settings: big.slice(0, MAX_PICK_SETTINGS).map(s => s.id), docs: ["settings.md", "compaction.md"] });
+		const { pick, request } = await cast("d ".repeat(2_000), { text: "Write it." }, cat, picks, ompMap(cat, { settings: big }));
+		for (const req of [pick, request]) {
+			expect(Buffer.byteLength(req.system) + Buffer.byteLength(req.user)).toBeLessThanOrEqual(PROMPT_REQUEST_BUDGET);
+		}
+		expect(pick.user).toContain("- extra.setting0 (");
+		expect(request.user).toContain("- extra.setting0 (string)");
+	});
+
+	test("the write request stays under its cap however big the catalogue and pages are", () => {
 		const huge = catalogue({
 			overrides: {
 				commands: Array.from({ length: 400 }, (_, i) => ({
@@ -288,11 +418,61 @@ describe("the request: catalogue and description only", () => {
 			{ name: "settings.md", text: "s".repeat(DOC_PAGE_BYTES) },
 			{ name: "skills.md", text: "k".repeat(DOC_PAGE_BYTES) },
 		];
-		const request = buildPromptRequest({ description: "d ".repeat(5_000), catalogue: huge, pages, settings: huge.settings });
+		const request = buildPromptRequest({
+			description: "d ".repeat(5_000),
+			catalogue: huge,
+			pages,
+			settings: huge.settings,
+			keywords: huge.keywordInfo,
+		});
 		const size = Buffer.byteLength(request.system) + Buffer.byteLength(request.user);
 		expect(size).toBeLessThanOrEqual(PROMPT_REQUEST_BUDGET);
 		expect(request.user).toContain("Description: d d");
 		expect(request.user).toContain("skill-0");
+	});
+});
+
+describe("parsing the first reply", () => {
+	const cat = catalogue();
+	const extra: SettingEntry[] = Array.from({ length: 10 }, (_, i) => ({
+		id: `extra.s${i}`,
+		type: "boolean",
+		values: [],
+		default: "",
+		description: "",
+	}));
+	const map = ompMap(cat, { settings: [...cat.settings, ...extra] });
+
+	test("docs are normalised, kept only when in the map, deduped and capped at three", () => {
+		const picks = parsePicks(
+			JSON.stringify({
+				docs: ["made-up", "omp://compaction", "compaction.md", "magic-keywords", "natives-architecture", "settings.md"],
+			}),
+			map,
+		);
+		expect(picks.docs).toEqual(["compaction.md", "magic-keywords.md", "natives-architecture.md"]);
+	});
+
+	test("settings are capped at MAX_PICK_SETTINGS, keywords and settings are deduped and checked against the map", () => {
+		const capped = parsePicks(JSON.stringify({ settings: map.settings.map(s => s.id) }), map);
+		expect(capped.settings).toEqual(map.settings.slice(0, MAX_PICK_SETTINGS).map(s => s.id));
+		expect(capped.settings).toHaveLength(MAX_PICK_SETTINGS);
+		expect(
+			parsePicks(
+				JSON.stringify({
+					settings: ["compaction.enabled", "compaction.enabled", "nope.id", "tui.motion"],
+					keywords: ["orchestrate", "orchestrate", "nope"],
+					docs: ["compaction", "compaction.md"],
+				}),
+				map,
+			),
+		).toEqual({ docs: ["compaction.md"], settings: ["compaction.enabled", "tui.motion"], keywords: ["orchestrate"] });
+	});
+
+	test("fenced or bare JSON parses; no JSON picks nothing", () => {
+		expect(parsePicks('```json\n{"keywords":["orchestrate"]}\n```', map).keywords).toEqual(["orchestrate"]);
+		expect(parsePicks('Sure: {"docs":["settings"]} done', map).docs).toEqual(["settings.md"]);
+		expect(parsePicks("no json here", map)).toEqual({ docs: [], settings: [], keywords: [] });
 	});
 });
 

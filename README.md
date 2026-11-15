@@ -95,13 +95,14 @@ Any model you are logged in to works (`/login`, or the provider's API key in the
 
 ### What the model sees
 
-Never your conversation. For a `?` prompt spell: the description and a catalogue of your omp setup: installed skills
-(name and description), slash commands (built-in, extension and prompt), the magic keywords you have switched on, the
-names of omp's doc pages, and, only when the description's words call for them, the text of up to two doc pages and
-the omp settings whose names match. Descriptions are cut to 120 characters; the whole request is capped at 32,000
-bytes (doc pages go first, then the catalogue shrinks to names). The answer is checked before it lands: a skill you
-don't have is never named, `/skill:` becomes `skill://`, a keyword you switched off is taken out, and a description
-that plainly asks to fan work out gets `orchestrate` when it is on.
+Never your conversation. For a `?` prompt spell, Spellbook first builds a plain-words map of omp from omp itself, once
+per session: every doc page's title and first sentence, every setting with its description, the magic keywords you
+have switched on with omp's own descriptions, your skills and slash commands. A first call shows that map and your
+description to the model, which picks up to three doc pages, up to eight settings and the keywords that fit, by meaning,
+so you don't need omp's words. A second call writes the prompt from the catalogue, the picked pages' text, settings and
+keywords, and your description. Each call is capped at 128,000 bytes. The answer is checked before it lands: a skill
+you don't have is never named, `/skill:` becomes `skill://`, a keyword you switched off is taken out, and an unknown
+setting is flagged.
 
 For a `?!`/`?!!` command: the description, the working folder, the OS, the shell `!` runs in (plus notes such as which
 tools omp's shell has built in), your SSH host aliases from `~/.ssh/config` (names only), your last few `!` commands in

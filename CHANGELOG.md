@@ -3,13 +3,16 @@
 ## 0.2.0
 
 - **Prompt spells.** `? <description>` now writes what to type into omp for it: a prompt for the agent that names the
-  installed skills that apply as `skill://<name>` and uses an enabled magic keyword where the task fits one (a request
-  to fan work out gets `orchestrate`); a slash command when that's what you described; or a setting as
-  `!omp config set <key> <value>`. It morphs in like a command and waits for Enter.
-- The model sees a catalogue of your omp setup (skills, slash commands, enabled magic keywords, doc page names, and
-  when the description calls for them up to two doc pages and the matching settings), never the conversation; the
-  request is capped at 32,000 bytes. Spellbook checks the answer before it lands: only installed skills, only enabled
-  keywords, `/skill:` written as `skill://`, settings with their `!`.
+  installed skills that apply as `skill://<name>` and uses an enabled magic keyword where the task fits one; a slash
+  command when that's what you described; or a setting as `!omp config set <key> <value>`. It morphs in like a command
+  and waits for Enter.
+- The model sees plain words and a map of omp, never the conversation. Once per session Spellbook builds that map from
+  omp itself: every doc page's title and first sentence, every setting with its description, the magic keywords you
+  have switched on with omp's own descriptions, skills and slash commands. A first call picks up to three doc pages,
+  eight settings and the keywords that fit the description by meaning; a second call writes the prompt from the
+  catalogue and those picks. Each call is capped at 128,000 bytes. Omp's own descriptions decide what a keyword or
+  setting means. Spellbook checks the answer before it lands: only installed skills, only enabled keywords, `/skill:`
+  written as `skill://`, settings with their `!`.
 - **Shell commands moved to `?!`** (`!<command>`) and `?!!` (`!!<command>`); `??` is no longer a spell.
 - Prompt spells you send are saved in the spellbook like commands; Tab on a `?` line offers saved prompts, Tab on a
   `?!`/`?!!` line saved commands. The spellbook file is now version 2 (`entries`, each with a `kind`); a 0.1 file is

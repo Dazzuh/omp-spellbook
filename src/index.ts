@@ -7,10 +7,11 @@ import { isNativeRendering, motionEffectsEnabled } from "@oh-my-pi/pi-tui";
 import { wrapAutocomplete } from "./autocomplete";
 import { installEditorHooks, type MorphDisplay, type SpellLook } from "./editor";
 import { pickModel, replyText } from "./model";
+import { buildOmpMap, type OmpMap, renderMap } from "./omp-map";
 import { parseCast } from "./parse";
 import { describeOs, detectShell, liveProbe, readSshHosts, type ShellInfo } from "./platform";
 import { buildSystemPrompt, buildUserMessage, parseAnswer } from "./prompt";
-import { castPrompt, PROMPT_MAX_TOKENS } from "./prompt-spell";
+import { castPrompt, PROMPT_MAX_TOKENS, PROMPT_REQUEST_BUDGET } from "./prompt-spell";
 import { readOmpCatalogue } from "./catalogue";
 import {
 	MORPH_STYLES,
@@ -94,6 +95,10 @@ export default function spellbook(pi: ExtensionAPI): void {
 	};
 	/** The context of the latest event; ctx objects differ per event, the Spellbook state must not. */
 	let live: ExtensionContext | undefined;
+	/** The plain-words map of omp, built once per session from the catalogue (reset on session_start). */
+	let mapCache: Promise<OmpMap> | undefined;
+	/** The map the latest prompt cast used, for the headless report. */
+	let lastMap: OmpMap | undefined;
 	const ctxNow = (): ExtensionContext => {
 		if (!live) throw new Error("Spellbook used before session start");
 		return live;
@@ -152,9 +157,17 @@ export default function spellbook(pi: ExtensionAPI): void {
 		},
 		askPrompt: async (description, signal) => {
 			let model = "";
+			const catalogue = await readOmpCatalogue(pi);
+			const pending = (mapCache ??= buildOmpMap(catalogue));
+			const map = await pending.catch(error => {
+				if (mapCache === pending) mapCache = undefined;
+				throw error;
+			});
+			lastMap = map;
 			const answer = await castPrompt(
 				description,
-				await readOmpCatalogue(pi),
+				catalogue,
+				map,
 				async request => {
 					const reply = await complete(request, PROMPT_MAX_TOKENS, signal);
 					model = reply.model;
@@ -172,6 +185,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		book.dispose();
 		live = ctx;
+		mapCache = undefined;
 		if (!ctx.hasUI) return;
 		for (const problem of current.problems) ctx.ui.notify(`Spellbook settings: ${problem}`, "warning");
 		// Re-added on every session_start (/new, resume); wrapAutocomplete skips a provider it already wrapped.
@@ -272,8 +286,11 @@ export default function spellbook(pi: ExtensionAPI): void {
 						await book.cast(request);
 						return;
 					}
+					const started = Date.now();
 					const result = await book.deps.askPrompt(request.description, AbortSignal.timeout(90_000));
-					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model })}\n`);
+					const ms = Date.now() - started;
+					const mapBytes = lastMap ? Buffer.byteLength(renderMap(lastMap, PROMPT_REQUEST_BUDGET)) : 0;
+					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model, ms, mapBytes })}\n`);
 					return;
 				}
 				default: {

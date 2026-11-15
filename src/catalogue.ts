@@ -1,7 +1,7 @@
 /**
  * The omp catalogue a prompt spell hands the model in place of the conversation: skills, slash
  * commands, enabled magic keywords and omp doc page names from the live setup, plus the text of at
- * most two doc pages when the description needs them.
+ * most three doc pages when the description needs them.
  *
  * {@link buildCatalogue} is pure over injected {@link CatalogueSources}; {@link readOmpCatalogue}
  * fills those sources from the running omp.
@@ -21,7 +21,7 @@ export interface CatalogueSources {
 	/** The extension API's `getCommands()`: extension, prompt and `skill:<name>` commands. */
 	commands: ReadonlyArray<{ name: string; description?: string; source: string }>;
 	/** `MAGIC_KEYWORDS`: `id` is the `magicKeywords.<id>` settings suffix, `word` the trigger. */
-	keywords: ReadonlyArray<{ id: string; word: string }>;
+	keywords: ReadonlyArray<{ id: string; word: string; description?: string; notice?: (...args: never[]) => string }>;
 	/** An omp setting's current value by id (`magicKeywords.enabled`); `undefined` when unknown. */
 	setting: (id: string) => unknown;
 	/** omp doc page names relative to `docs/` (`getDocFilenames()`). */
@@ -30,6 +30,8 @@ export interface CatalogueSources {
 	readDoc: (name: string) => Promise<string | undefined>;
 	/** omp's setting definitions (the config registry's `all()`), for `omp config set` lines; optional. */
 	settings?: ReadonlyArray<SettingSource>;
+	/** The session's live tool names: orchestrate's notice renders only when this is given. */
+	noticeContext?: { tools: readonly string[] };
 }
 
 /** One omp setting definition, as the config registry holds it. */
@@ -53,12 +55,19 @@ export interface SettingEntry {
 	description: string;
 }
 
+/** One enabled magic keyword as the model sees it: its trigger, omp's description, and its notice if it takes no context. */
+export interface KeywordEntry {
+	word: string;
+	description: string;
+	notice?: string;
+}
+
 /** Each description is cut to this many characters (code points) in the full render. */
 export const DESCRIPTION_CHARS = 120;
 /** Default render budget, in UTF-8 bytes: Darryn's setup renders in full at about 11.5k. */
 export const CATALOGUE_BUDGET = 16_000;
 /** At most this many doc pages per request. */
-export const MAX_DOC_PAGES = 2;
+export const MAX_DOC_PAGES = 3;
 /** Each doc page's text is capped to this many UTF-8 bytes. */
 export const DOC_PAGE_BYTES = 6_000;
 
@@ -124,6 +133,8 @@ export class Catalogue {
 		readonly disabledKeywords: readonly string[] = [],
 		/** omp settings a `!omp config set` line may name; never credentials. */
 		readonly settings: readonly SettingEntry[] = [],
+		/** Enabled magic keywords with omp's own descriptions, in {@link keywords} order. */
+		readonly keywordInfo: readonly KeywordEntry[] = [],
 	) {}
 
 	/**
@@ -157,6 +168,12 @@ export class Catalogue {
 			if (text !== undefined) pages.push({ name, text: clipBytes(text, maxBytes) });
 		}
 		return pages;
+	}
+
+	/** Uncapped text of one listed doc page; `undefined` when it is not listed or missing. */
+	async readDocText(name: string): Promise<string | undefined> {
+		const key = docKey(name);
+		return this.docs.includes(key) ? this.readDoc(key) : undefined;
 	}
 
 	private lines(withDescriptions: boolean): string[] {
@@ -203,6 +220,30 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 	const on = (id: string) => sources.setting(id) !== false;
 	const master = on("magicKeywords.enabled");
 	const keywords = sources.keywords.filter(k => master && on(`magicKeywords.${k.id}`)).map(k => k.word);
+	// A zero-argument notice renders as it is. orchestrate's notice reads only `tools` (omp's
+	// renderOrchestrateNotice), so it renders from the session's live tool list when one is given: a
+	// notice guessed from no session would be wrong. workflowz's notice needs task/eval flags and is
+	// never rendered here.
+	const noticeFor = (k: (typeof sources.keywords)[number]): string => {
+		if (typeof k.notice !== "function") return "";
+		try {
+			if (k.notice.length === 0) return k.notice().trim();
+			if (k.id === "orchestrate" && sources.noticeContext) {
+				const render = k.notice as (context: { tools: readonly string[] }) => string;
+				return render({ tools: sources.noticeContext.tools }).trim();
+			}
+			return "";
+		} catch {
+			return "";
+		}
+	};
+	const keywordInfo: KeywordEntry[] = sources.keywords
+		.filter(k => master && on(`magicKeywords.${k.id}`))
+		.map(k => {
+			const notice = noticeFor(k);
+			const description = describe(k.description);
+			return notice ? { word: k.word, description, notice } : { word: k.word, description };
+		});
 	const disabledKeywords = sources.keywords.map(k => k.word).filter(word => !keywords.includes(word));
 	const settings = (sources.settings ?? [])
 		.filter(s => !s.credential)
@@ -221,6 +262,7 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 		sources.readDoc,
 		disabledKeywords,
 		settings,
+		keywordInfo,
 	);
 }
 
@@ -228,7 +270,9 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
  * The catalogue from the running omp: built-in commands, `pi.getCommands()` (call it from a handler
  * or event, not during extension load), magic keywords with their settings, and the doc index.
  */
-export async function readOmpCatalogue(pi: Pick<ExtensionAPI, "getCommands">): Promise<Catalogue> {
+export async function readOmpCatalogue(
+	pi: Pick<ExtensionAPI, "getCommands"> & Partial<Pick<ExtensionAPI, "getActiveTools">>,
+): Promise<Catalogue> {
 	const [{ BUILTIN_SLASH_COMMAND_DEFS }, { MAGIC_KEYWORDS }, { getDocFilenames, getEmbeddedDoc }, { lookup, all }, omp] =
 		await Promise.all([
 			import("@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry"),
@@ -237,6 +281,13 @@ export async function readOmpCatalogue(pi: Pick<ExtensionAPI, "getCommands">): P
 			import("@oh-my-pi/pi-coding-agent/config/registry"),
 			import("@oh-my-pi/pi-coding-agent"),
 		]);
+	// The session's live tool names, read only when omp offers them: orchestrate's notice names them.
+	let tools: string[] | undefined;
+	try {
+		tools = pi.getActiveTools?.();
+	} catch {
+		tools = undefined;
+	}
 	return buildCatalogue({
 		builtins: BUILTIN_SLASH_COMMAND_DEFS,
 		commands: pi.getCommands(),
@@ -252,5 +303,6 @@ export async function readOmpCatalogue(pi: Pick<ExtensionAPI, "getCommands">): P
 		docNames: getDocFilenames(),
 		readDoc: getEmbeddedDoc,
 		settings: all().map(s => s.definition as SettingSource),
+		...(tools ? { noticeContext: { tools } } : {}),
 	});
 }

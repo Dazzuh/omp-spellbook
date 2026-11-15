@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	buildCatalogue,
+	type Catalogue,
 	CATALOGUE_BUDGET,
 	type CatalogueEntry,
 	type CatalogueSources,
@@ -98,14 +99,45 @@ describe("catalogue from fixture sources", () => {
 		for (const tiny of [120, 40, 0]) expect(Buffer.byteLength(catalogue.render(tiny))).toBeLessThanOrEqual(tiny);
 	});
 
-	test("doc reader: known pages only, at most two, each capped", async () => {
+	test("doc reader: known pages only, at most three, each capped", async () => {
 		const catalogue = buildCatalogue(sources());
 		const pages = await catalogue.readDocs(["omp://skills", "nope.md", "extensions.md", "skills.md", "hooks"]);
-		expect(pages.map(p => p.name)).toEqual(["skills.md", "extensions.md"]);
+		expect(pages.map(p => p.name)).toEqual(["skills.md", "extensions.md", "hooks.md"]);
 		expect(Buffer.byteLength(pages[0]!.text)).toBeLessThanOrEqual(DOC_PAGE_BYTES);
 		expect(pages[0]!.text.endsWith("…")).toBe(true);
 		expect(pages[1]!.text).toBe("# Extensions\n\nregisterCommand …");
+		expect(pages[2]!.text).toBe("# Hooks");
 		expect(await catalogue.readDocs(["../package.json"])).toEqual([]);
+	});
+
+	test("orchestrate's notice renders only with live tools; workflow's never does; a throwing notice gives none", () => {
+		const pairs = (catalogue: Catalogue) => catalogue.keywordInfo.map(k => [k.word, k.notice]);
+		const keywords: CatalogueSources["keywords"] = [
+			{ id: "ultrathink", word: "ultrathink", notice: () => "U" },
+			{ id: "orchestrate", word: "orchestrate", notice: (ctx: { tools: string[] }) => `O ${ctx.tools.join(",")}` },
+			{ id: "workflow", word: "workflowz", notice: (ctx: { taskBatch: boolean; tools: string[] }) => `W ${ctx.taskBatch}` },
+		];
+		expect(pairs(buildCatalogue(sources({ keywords })))).toEqual([
+			["ultrathink", "U"],
+			["orchestrate", undefined],
+			["workflowz", undefined],
+		]);
+		expect(pairs(buildCatalogue(sources({ keywords, noticeContext: { tools: ["task", "read"] } })))).toEqual([
+			["ultrathink", "U"],
+			["orchestrate", "O task,read"],
+			["workflowz", undefined],
+		]);
+		const throwing = buildCatalogue(
+			sources({
+				keywords: [
+					{ id: "orchestrate", word: "orchestrate", notice: (ctx: { tools: string[] }) => { throw new Error(`no ${ctx.tools}`); } },
+					{ id: "ultrathink", word: "ultrathink", notice: () => { throw new Error("boom"); } },
+				],
+				noticeContext: { tools: ["task"] },
+			}),
+		);
+		expect(throwing.keywordInfo.map(k => k.word)).toEqual(["orchestrate", "ultrathink"]);
+		expect(throwing.keywordInfo.every(k => k.notice === undefined)).toBe(true);
 	});
 });
 
