@@ -5,7 +5,7 @@ plain words, and omp's own way of asking for it morphs into the composer: a prom
 keywords that fit, a slash command, a setting, or with `?!` a shell command. You read it, edit it if you like, and
 press Enter. Nothing is sent or run until you do; Enter while the morph is still playing only finishes it.
 
-![Typing "? get a few agents to review this repo for bugs" turns into a prompt with orchestrate, then "?! find files bigger than 1 MB under here" turns into "!find . -type f -size +1M"](docs/demo.gif)
+![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into an omp prompt that fans the review out to subagents with orchestrate; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
 
 - `? <description>` → what to type into omp for it:
   - a **prompt** for the agent, naming your installed skills that apply as `skill://<name>` and using a magic
