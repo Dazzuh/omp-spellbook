@@ -192,7 +192,7 @@ describe("spellbook file and Tab", () => {
 		// The user edits the command before sending; the edited one is what gets saved.
 		expect(h.submit("!ls -la --color")).toBeUndefined();
 		h.book.onUserBash("ls -la --color");
-		expect(readBook(path.join(h.dir, "book.json")).spells).toMatchObject([
+		expect(readBook(path.join(h.dir, "book.json")).entries).toMatchObject([
 			{ words: "list files here", command: "ls -la --color", uses: 1 },
 		]);
 
@@ -247,7 +247,7 @@ describe("spellbook file and Tab", () => {
 		h.submit("!git status");
 		h.book.onUserBash("git status");
 		const book = JSON.parse(fs.readFileSync(path.join(h.dir, "book.json"), "utf8"));
-		expect(book.spells.map((s: { command: string }) => s.command)).toEqual(["ls -la src"]);
+		expect(book.entries.map((s: { command: string }) => s.command)).toEqual(["ls -la src"]);
 	});
 
 	test("an unreadable spellbook is reported and never overwritten", async () => {

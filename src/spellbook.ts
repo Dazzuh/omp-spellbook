@@ -1,4 +1,4 @@
-import { addSpell, BookReadError, findSpells, readBook, type SpellMatch, writeBook } from "./book";
+import { addSpell, BookReadError, findSpells, readBook, type SpellKind, type SpellMatch, type SpellOf, writeBook } from "./book";
 import { destructiveReason } from "./danger";
 import type { MorphDisplay } from "./editor";
 import { FRAME_MS, morphFrames } from "./morph";
@@ -56,10 +56,10 @@ export class Spellbook {
 
 	constructor(readonly deps: SpellbookDeps) {}
 
-	/** Saved spells matching `query`; an unreadable book reports once and matches nothing. */
-	find(query: string, limit?: number): SpellMatch[] {
+	/** Saved spells of `kind` (commands by default) matching `query`; an unreadable book reports once and matches nothing. */
+	find<K extends SpellKind = "command">(query: string, limit?: number, kind?: K): SpellMatch<SpellOf<K>>[] {
 		try {
-			return findSpells(readBook(this.deps.bookFile()), query, limit);
+			return findSpells(readBook(this.deps.bookFile()), query, limit, kind);
 		} catch (error) {
 			if (error instanceof BookReadError) this.deps.ui.notify(error.message, "warning");
 			return [];
