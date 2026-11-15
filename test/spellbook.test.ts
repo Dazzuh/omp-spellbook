@@ -4,7 +4,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { readBook } from "../src/book";
 import { type CompletionProvider, wrapAutocomplete } from "../src/autocomplete";
-import { type HookableEditor, hookEditor, type MorphDisplay, SHIMMER_PERIOD_MS, SPELL_SIGIL_TOKENS, type SpellLook } from "../src/editor";
+import {
+	type HookableEditor,
+	hookEditor,
+	type MorphDisplay,
+	SHELL_SIGIL_TOKENS,
+	SHIMMER_PERIOD_MS,
+	SPELL_SIGIL_TOKENS,
+	type SpellLook,
+} from "../src/editor";
+import spellbook from "../src/index";
 import type { CastAnswer, ContextPacket } from "../src/prompt";
 import type { MorphStyle } from "../src/settings";
 import { Spellbook } from "../src/spellbook";
@@ -76,24 +85,24 @@ function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotio
 let h: ReturnType<typeof harness>;
 afterEach(() => fs.rmSync(h.dir, { recursive: true, force: true }));
 
-describe("? and ??", () => {
+describe("?! and ?!!", () => {
 	beforeEach(() => {
 		h = harness();
 	});
 
-	test("? <desc> is taken from omp and ends as !<command> in the composer, never run", async () => {
-		expect(h.submit("? list files here")).toEqual({ handled: true });
+	test("?! <desc> is taken from omp and ends as !<command> in the composer, never run", async () => {
+		expect(h.submit("?! list files here")).toEqual({ handled: true });
 		await h.flush();
 		expect(h.state.text).toBe("!ls -la");
-		expect(h.state.history[0]).toBe("? list files here");
+		expect(h.state.history[0]).toBe("?! list files here");
 		expect(h.state.history.length).toBeGreaterThan(10);
 		expect(h.state.line).toContain("Lists every file here.");
 		expect(h.display.frame).toBeUndefined();
 		expect(h.state.asked[0]!.description).toBe("list files here");
 	});
 
-	test("?? <desc> ends as !!<command>", async () => {
-		h.submit("?? list files here");
+	test("?!! <desc> ends as !!<command>", async () => {
+		expect(h.submit("?!! list files here")).toEqual({ handled: true });
 		await h.flush();
 		expect(h.state.text).toBe("!!ls -la");
 	});
@@ -103,8 +112,23 @@ describe("? and ??", () => {
 		expect(h.submit("!ls")).toBeUndefined();
 	});
 
+	test("a ? prompt spell is not cast yet: it passes through to omp, no model call", async () => {
+		expect(h.submit("? get a few agents to review this repo")).toBeUndefined();
+		await h.flush();
+		expect(h.state.asked).toHaveLength(0);
+		expect(h.state.text).toBe("");
+	});
+
+	test("?? and ?!!! are not spells", async () => {
+		for (const text of ["?? list files here", "??? list", "?!!! list files here"]) {
+			expect(h.submit(text)).toBeUndefined();
+		}
+		await h.flush();
+		expect(h.state.asked).toHaveLength(0);
+	});
+
 	test("typing over the composer mid-morph stops the morph and keeps the user's text", async () => {
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		for (let i = 0; i < 5; i++) await Promise.resolve();
 		h.state.timers.shift()!();
 		h.state.text = "my own text";
@@ -114,7 +138,7 @@ describe("? and ??", () => {
 	});
 
 	test("Enter mid-morph never sends a half-drawn command: it finishes the morph and waits", async () => {
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		for (let i = 0; i < 5; i++) await Promise.resolve();
 		for (let i = 0; i < 3; i++) h.state.timers.shift()!();
 		const halfDrawn = h.state.text;
@@ -132,7 +156,7 @@ describe("? and ??", () => {
 describe("destructive commands", () => {
 	test("the plain-words line carries a warning (local check, even if the model says safe)", async () => {
 		h = harness({ answer: { command: "rm -rf build", explain: "Deletes the build folder.", destructive: false } });
-		h.submit("? delete the build folder");
+		h.submit("?! delete the build folder");
 		await h.flush();
 		expect(h.state.text).toBe("!rm -rf build");
 		expect(h.state.line).toContain("⚠ Destructive: deletes files.");
@@ -141,7 +165,7 @@ describe("destructive commands", () => {
 
 	test("the model's own destructive flag also warns", async () => {
 		h = harness({ answer: { command: "my-tool --purge", explain: "Purges the cache.", destructive: true } });
-		h.submit("? purge the tool cache");
+		h.submit("?! purge the tool cache");
 		await h.flush();
 		expect(h.state.line).toContain("⚠ Destructive");
 	});
@@ -150,9 +174,9 @@ describe("destructive commands", () => {
 describe("reduce motion", () => {
 	test("motion off: the command appears in one step, no frames", async () => {
 		h = harness({ reduceMotion: true });
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await h.flush();
-		expect(h.state.history).toEqual(["? list files here", "!ls -la"]);
+		expect(h.state.history).toEqual(["?! list files here", "!ls -la"]);
 	});
 
 	test("Tern's Reduce Motion, read from the editor's describe, also stops the animation", async () => {
@@ -165,15 +189,15 @@ describe("reduce motion", () => {
 		};
 		hookEditor(editor, h.display, (_c, t) => t);
 		editor.describe({ reduceMotion: true });
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await h.flush();
-		expect(h.state.history).toEqual(["? list files here", "!ls -la"]);
+		expect(h.state.history).toEqual(["?! list files here", "!ls -la"]);
 	});
 
 	for (const style of ["diff", "decode", "rewind"] as const) {
 		test(`${style}: animates when motion is on`, async () => {
 			h = harness({ style });
-			h.submit("? list files here");
+			h.submit("?! list files here");
 			await h.flush();
 			expect(h.state.history.length).toBeGreaterThan(10);
 			expect(h.state.text).toBe("!ls -la");
@@ -186,8 +210,8 @@ describe("spellbook file and Tab", () => {
 		h = harness();
 	});
 
-	test("a sent ? command is saved under the words, and Tab on a new ? line offers it", async () => {
-		h.submit("? list files here");
+	test("a sent ?! command is saved under the words, and Tab on a new ?! line offers it", async () => {
+		h.submit("?! list files here");
 		await h.flush();
 		// The user edits the command before sending; the edited one is what gets saved.
 		expect(h.submit("!ls -la --color")).toBeUndefined();
@@ -210,18 +234,20 @@ describe("spellbook file and Tab", () => {
 			},
 		});
 		expect(provider.extra()).toBe("kept");
-		expect(provider.shouldTriggerFileCompletion!(["? list"], 0, 6)).toBe(true);
-		const suggestions = await provider.getForceFileSuggestions!(["? list"], 0, 6);
+		expect(provider.shouldTriggerFileCompletion!(["?! list"], 0, 7)).toBe(true);
+		const suggestions = await provider.getForceFileSuggestions!(["?! list"], 0, 7);
 		expect(suggestions?.items).toEqual([
 			{ value: "spellbook:0", label: "list files here", description: "ls -la --color" },
 		]);
-		// Non-? lines still get omp's own completion.
+		// Non-spell lines, and ? prompt spell lines, still get omp's own completion: never saved commands.
 		expect((await provider.getForceFileSuggestions!(["src/"], 0, 4))?.items[0]!.value).toBe("file");
+		expect((await provider.getForceFileSuggestions!(["? list"], 0, 6))?.items[0]!.value).toBe("file");
+		expect((await provider.getForceFileSuggestions!(["?? list"], 0, 7))?.items[0]!.value).toBe("file");
 
 		// Picking needs no model call and lands as !<command>.
 		const asked = h.state.asked.length;
-		h.state.text = "? list";
-		const applied = provider.applyCompletion(["? list"], 0, 6, suggestions!.items[0]!, "? list");
+		h.state.text = "?! list";
+		const applied = provider.applyCompletion(["?! list"], 0, 7, suggestions!.items[0]!, "?! list");
 		applied.onApplied!();
 		await h.flush();
 		expect(picks).toEqual(["ls -la --color"]);
@@ -229,8 +255,25 @@ describe("spellbook file and Tab", () => {
 		expect(h.state.text).toBe("!ls -la --color");
 	});
 
-	test("a ? command replaced by a normal prompt is not saved", async () => {
-		h.submit("? list files here");
+	test("Tab on ?!! lands the saved command as !!<command>", async () => {
+		h.submit("?! list files here");
+		await h.flush();
+		h.submit("!ls -la");
+		h.book.onUserBash("ls -la");
+		const base: CompletionProvider = { applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }) };
+		const provider = wrapAutocomplete(base, {
+			find: q => h.book.find(q),
+			onPick: pick => h.book.pick(pick),
+		});
+		const suggestions = await provider.getForceFileSuggestions!(["?!! list"], 0, 8);
+		h.state.text = "?!! list";
+		provider.applyCompletion(["?!! list"], 0, 8, suggestions!.items[0]!, "?!! list").onApplied!();
+		await h.flush();
+		expect(h.state.text).toBe("!!ls -la");
+	});
+
+	test("a ?! command replaced by a normal prompt is not saved", async () => {
+		h.submit("?! list files here");
 		await h.flush();
 		h.submit("never mind, explain the repo");
 		h.book.onUserBash("ls");
@@ -238,11 +281,11 @@ describe("spellbook file and Tab", () => {
 	});
 
 	test("an edited command is saved as sent; a command for another program is not", async () => {
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await h.flush();
 		h.submit("!ls -la src");
 		h.book.onUserBash("ls -la src");
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await h.flush();
 		h.submit("!git status");
 		h.book.onUserBash("git status");
@@ -252,7 +295,7 @@ describe("spellbook file and Tab", () => {
 
 	test("an unreadable spellbook is reported and never overwritten", async () => {
 		fs.writeFileSync(path.join(h.dir, "book.json"), "{ broken");
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await h.flush();
 		h.book.onUserBash("ls -la");
 		expect(fs.readFileSync(path.join(h.dir, "book.json"), "utf8")).toBe("{ broken");
@@ -288,12 +331,24 @@ describe("editor hooks", () => {
 		expect(editor.decorateText!("def", { line: 1, startCol: 1, endCol: 4 })).toBe(
 			"<toolDiffAdded>de</toolDiffAdded>f",
 		);
-		// The `?` keeps the spell's mark through the morph, so Tern's chip and glow last until `!` lands.
+		// The prefix keeps the spell's mark through the morph, so Tern's chip and glow last until `!` lands.
 		expect(editor.describeDecorations!(["? ab", "cdef"])).toEqual([
-			{ from: 0, to: 1, s: SPELL_SIGIL_TOKENS },
+			{ from: 0, to: 2, s: SPELL_SIGIL_TOKENS },
 			{ from: 2, to: 3, s: "toolDiffRemoved" },
 			{ from: 6, to: 8, s: "toolDiffAdded" },
 		]);
+		// A shell spell's frame keeps its own kind's mark, and paints its prefix green in a plain terminal.
+		display.frame = { text: "?!! ab", marks: [{ from: 4, to: 5, kind: "gone" }] };
+		expect(editor.describeDecorations!(["?!! ab"])).toEqual([
+			{ from: 0, to: 4, s: SHELL_SIGIL_TOKENS["!!"] },
+			{ from: 4, to: 5, s: "toolDiffRemoved" },
+		]);
+		expect(editor.decorateText!("?!! ab", { line: 0, startCol: 0, endCol: 6 })).toBe(
+			"<success>?!!</success> <toolDiffRemoved>a</toolDiffRemoved>b",
+		);
+		// Once the line is `!…`, it hides behind omp's bash chip as omp's own shell mode does.
+		display.frame = { text: "!!ls", marks: [] };
+		expect(editor.describeDecorations!(["!!ls"])).toEqual([{ from: 0, to: 2, s: "hide" }]);
 		expect(invalidated).toBe(0);
 	});
 
@@ -319,27 +374,54 @@ describe("editor hooks", () => {
 		return { editor, display, own, lines: text.split("\n") };
 	}
 
-	test("a ? line in Tern: the sigil carries the plugin's marker pair, the description shimmers like a magic keyword", () => {
+	test("a ? line in Tern: the prefix carries the plugin's marker pair, the description shimmers like a magic keyword", () => {
 		const { editor, display, lines } = spellEditor("? find big files");
+		// The marker covers the prefix and the space after it: the chip stands in for both.
 		expect(editor.describeDecorations!(lines)).toEqual([
-			{ from: 0, to: 1, s: "accent mono" },
+			{ from: 0, to: 2, s: "accent mono" },
 			{ from: 2, to: 16, s: "accent", fx: "shimmer" },
 		]);
 		display.casting = "? find big files";
 		expect(editor.describeDecorations!(lines)).toEqual([
-			{ from: 0, to: 1, s: "accent mono", fx: "pulse" },
+			{ from: 0, to: 2, s: "accent mono", fx: "pulse" },
 			{ from: 2, to: 16, s: "accent", fx: "pulse" },
 		]);
 		// Only the line being cast pulses: a spell typed over it while the model answers shimmers.
 		display.casting = "? find big file";
 		expect(editor.describeDecorations!(lines)[1]!.fx).toBe("shimmer");
-		expect(spellEditor("  ??list it").editor.describeDecorations!(["  ??list it"])).toEqual([
-			{ from: 2, to: 4, s: "accent mono" },
-			{ from: 4, to: 11, s: "accent", fx: "shimmer" },
-		]);
 	});
 
-	test("the ? never hides: without Tern's plugin it is the only mark of a spell", () => {
+	test("?! and ?!! lines in Tern: each kind has its own marker, the description shimmers", () => {
+		expect(spellEditor("?! find big files").editor.describeDecorations!(["?! find big files"])).toEqual([
+			{ from: 0, to: 3, s: "success mono" },
+			{ from: 3, to: 17, s: "accent", fx: "shimmer" },
+		]);
+		expect(spellEditor("  ?!!list it").editor.describeDecorations!(["  ?!!list it"])).toEqual([
+			{ from: 2, to: 5, s: "success mono strong" },
+			{ from: 5, to: 12, s: "accent", fx: "shimmer" },
+		]);
+		const { editor, display, lines } = spellEditor("?! find big files");
+		display.casting = "?! find big files";
+		expect(editor.describeDecorations!(lines)[0]).toEqual({ from: 0, to: 3, s: "success mono", fx: "pulse" });
+	});
+
+	test("the three markers are distinct, coloured, never hidden, and never a pair omp emits in the composer", () => {
+		const markers = [SPELL_SIGIL_TOKENS, SHELL_SIGIL_TOKENS["!"], SHELL_SIGIL_TOKENS["!!"]];
+		expect(new Set(markers).size).toBe(3);
+		// omp 18.20.2's own composer decorations (custom-editor.ts).
+		const omp = ["accent", "accent strong", "customMessageLabel strong", "statusLineModel strong", "dim", "typo", "hide"];
+		for (const marker of markers) {
+			const tokens = marker.split(" ");
+			expect(tokens).not.toContain("hide");
+			expect(tokens).toContain("mono");
+			expect(tokens.some(t => t === "accent" || t === "success")).toBe(true);
+			expect(omp).not.toContain(marker);
+		}
+		// The sheet tells ?!! from ?! by a token ?! lacks.
+		expect(SHELL_SIGIL_TOKENS["!!"].split(" ").some(t => !SHELL_SIGIL_TOKENS["!"].split(" ").includes(t))).toBe(true);
+	});
+
+	test("the prefix never hides: without Tern's plugin it is the only mark of a spell", () => {
 		expect(SPELL_SIGIL_TOKENS.split(" ")).toContain("accent");
 		expect(SPELL_SIGIL_TOKENS.split(" ")).not.toContain("hide");
 	});
@@ -348,22 +430,39 @@ describe("editor hooks", () => {
 		const { editor, display, lines } = spellEditor("? find big files", { motion: false });
 		display.casting = "? find big files";
 		expect(editor.describeDecorations!(lines)).toEqual([
-			{ from: 0, to: 1, s: "accent mono" },
+			{ from: 0, to: 2, s: "accent mono" },
 			{ from: 2, to: 16, s: "accent" },
 		]);
 	});
 
-	test("a bare ? or ?? is already a spell: the sigil is marked before any words are typed", () => {
-		for (const [text, from, to] of [["?", 0, 1], ["?? ", 0, 2], ["  ?", 2, 3]] as const) {
+	test("a bare ?, ?! or ?!! is already a spell: the prefix is marked before any words are typed", () => {
+		const cases = [
+			["?", 0, 1, 1, "accent mono", "accent"],
+			["?! ", 0, 2, 3, "success mono", "success"],
+			["  ?!!", 2, 5, 5, "success mono strong", "success"],
+		] as const;
+		for (const [text, from, to, lead, s, color] of cases) {
 			const { editor, lines } = spellEditor(text);
-			expect(editor.describeDecorations!(lines)).toEqual([{ from, to, s: "accent mono" }]);
+			expect(editor.describeDecorations!(lines)).toEqual([{ from, to: lead, s }]);
 			expect(editor.decorateText!(text, { line: 0, startCol: 0, endCol: text.length })).toBe(
-				`${text.slice(0, from)}<accent>${text.slice(from, to)}</accent>${text.slice(to)}`,
+				`${text.slice(0, from)}<${color}>${text.slice(from, to)}</${color}>${text.slice(to)}`,
 			);
 		}
 	});
 
-	for (const text of ["please orchestrate this", "look at @src/index.ts", "/skill:kata do it", "!ls", "???", "what? no", "?\nnot a spell"]) {
+	for (const text of [
+		"please orchestrate this",
+		"look at @src/index.ts",
+		"/skill:kata do it",
+		"!ls",
+		"??",
+		"?? list files",
+		"???",
+		"?!!!",
+		"?!!! list files",
+		"what? no",
+		"?\nnot a spell",
+	]) {
 		test(`not a spell, omp's own decorations: ${JSON.stringify(text)}`, () => {
 			const { editor, own, lines } = spellEditor(text);
 			expect(editor.describeDecorations!(lines)).toBe(own);
@@ -390,6 +489,13 @@ describe("editor hooks", () => {
 		expect(painted).toContain("🔥");
 		expect(painted.replace(/<[^>]*>|\x1b\[39m/g, "")).toBe(text);
 	});
+
+	test("a ?! line in a plain terminal: the prefix in success green, the description in the hue sweep", () => {
+		const still = spellEditor("?!! ab", { motion: false }).editor;
+		expect(still.decorateText!("?!! ab", { line: 0, startCol: 0, endCol: 6 })).toBe(
+			"<success>?!!</success> <h265>a<h295>b\x1b[39m",
+		);
+	});
 });
 
 describe("casting state", () => {
@@ -398,9 +504,9 @@ describe("casting state", () => {
 		h = harness({ gate });
 		let repaints = 0;
 		h.display.repaint = () => repaints++;
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await Promise.resolve();
-		expect(h.display.casting).toBe("? list files here");
+		expect(h.display.casting).toBe("?! list files here");
 		expect(repaints).toBeGreaterThan(0);
 		release();
 		await h.flush();
@@ -411,12 +517,47 @@ describe("casting state", () => {
 	test("an abandoned cast stops casting too", async () => {
 		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
 		h = harness({ gate });
-		h.submit("? list files here");
+		h.submit("?! list files here");
 		await Promise.resolve();
 		h.submit("never mind");
 		release();
 		await h.flush();
 		expect(h.display.casting).toBeUndefined();
 		expect(h.state.text).toBe("");
+	});
+});
+
+describe("/spellbook cast", () => {
+	test("casts its words as a ?! shell spell", async () => {
+		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+		spellbook({
+			setLabel() {},
+			on() {},
+			registerCommand: (name: string, command: { handler(args: string, ctx: unknown): Promise<void> }) => {
+				commands.set(name, command);
+			},
+		} as never);
+		const texts: string[] = [];
+		const notes: string[] = [];
+		let text = "";
+		const ctx = {
+			hasUI: true,
+			cwd: os.tmpdir(),
+			ui: {
+				getEditorText: () => text,
+				setEditorText: (t: string) => {
+					text = t;
+					texts.push(t);
+				},
+				setWidget() {},
+				notify: (message: string) => notes.push(message),
+			},
+			// No model: the cast stops at the model call, after the spell line is in the composer.
+			models: { resolve: () => undefined, current: () => undefined },
+			sessionManager: { getBranch: () => [] },
+		};
+		await commands.get("spellbook")!.handler("cast list files here", ctx);
+		expect(texts[0]).toBe("?! list files here");
+		expect(notes.join("\n")).toContain("no model");
 	});
 });

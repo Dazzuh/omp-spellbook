@@ -2,7 +2,7 @@ import { addSpell, BookReadError, findSpells, readBook, type SpellMatch, writeBo
 import { destructiveReason } from "./danger";
 import type { MorphDisplay } from "./editor";
 import { FRAME_MS, morphFrames } from "./morph";
-import { type CastRequest, parseCast, parseShellLine } from "./parse";
+import { castPrefix, parseCast, parseShellLine, type ShellCast } from "./parse";
 import type { CastAnswer, ContextPacket } from "./prompt";
 import type { SpellbookSettings } from "./settings";
 import type { SpellPick } from "./autocomplete";
@@ -67,9 +67,10 @@ export class Spellbook {
 	}
 
 	/**
-	 * The `input` hook: a `?`/`??` line is taken (returns `{ handled: true }`); Enter during a morph
-	 * is taken too and finishes the morph, so a half-drawn command never runs; a `!` line keeps a
-	 * pending spell for `user_bash` to save; anything else drops it and any cast still in flight.
+	 * The `input` hook: a `?!`/`?!!` line is taken and cast (returns `{ handled: true }`); a `?` prompt
+	 * spell line is left to omp for now. Enter during a morph is taken too and finishes the morph, so
+	 * a half-drawn command never runs; a `!` line keeps a pending spell for `user_bash` to save;
+	 * anything else drops it and any cast still in flight.
 	 */
 	onInput(text: string): { handled: true } | undefined {
 		const target = this.#morphTarget;
@@ -79,7 +80,7 @@ export class Spellbook {
 			return { handled: true };
 		}
 		const cast = parseCast(text);
-		if (cast) {
+		if (cast?.kind === "shell") {
 			void this.cast(cast);
 			return { handled: true };
 		}
@@ -112,13 +113,13 @@ export class Spellbook {
 	}
 
 	/** Turn a description into a command and morph it into the composer. Never runs anything. */
-	async cast(request: CastRequest): Promise<void> {
+	async cast(request: ShellCast): Promise<void> {
 		const { ui } = this.deps;
 		this.#castAbort?.abort();
 		this.#stopMorph();
 		const abort = new AbortController();
 		this.#castAbort = abort;
-		const typed = `${request.sigil === "!!" ? "??" : "?"} ${request.description}`;
+		const typed = `${castPrefix(request)} ${request.description}`;
 		ui.setText(typed);
 		ui.setLine(`${this.deps.paint("dim", "✦ Spellbook is finding the command…")}`);
 		this.#setCasting(typed);

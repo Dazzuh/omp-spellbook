@@ -20,9 +20,9 @@ const NOISE = "!#$%&*+-/<=>?@^_~abcdefghijklmnopqrstuvwxyz0123456789";
 
 type Op = { k: "keep" | "del" | "ins"; c: string };
 
-/** Split a composer text into its leading sigil (`? `, `?? `, `!`, `!!`) and the rest. */
+/** Split a composer text into its leading sigil (`? `, `?! `, `?!! `, `!`, `!!`) and the rest. */
 function splitSigil(text: string): [string, string] {
-	const match = /^\s*(?:\?\??[ \t]*|!!?)/.exec(text);
+	const match = /^\s*(?:\?(?:!!?)?(?![?!])[ \t]*|!!?)/.exec(text);
 	const sigil = match?.[0] ?? "";
 	return [sigil, text.slice(sigil.length)];
 }

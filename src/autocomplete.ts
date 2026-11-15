@@ -26,7 +26,7 @@ export interface CompletionProvider {
 }
 
 export interface SpellPick {
-	/** The `?` line as typed. */
+	/** The `?!`/`?!!` line as typed. */
 	from: string;
 	sigil: "!" | "!!";
 	words: string;
@@ -41,43 +41,44 @@ export interface SpellCompletionDeps {
 
 const VALUE_PREFIX = "spellbook:";
 
-/** The whole composer text when the composer is a single `?` line with the cursor on it. */
-function castLine(lines: string[], cursorLine: number): string | undefined {
+/** The words of a single-line `?!`/`?!!` composer with the cursor on it, with its sigil. */
+function shellCastLine(lines: string[], cursorLine: number): { text: string; sigil: "!" | "!!"; query: string } | undefined {
 	if (lines.length !== 1 || cursorLine !== 0) return undefined;
 	const text = lines[0]!;
-	return castQuery(text) ? text : undefined;
+	const cast = castQuery(text);
+	return cast?.kind === "shell" ? { text, sigil: cast.sigil, query: cast.query } : undefined;
 }
 
 /** Providers this module already wrapped, so a factory re-added on session_start doesn't stack. */
 const wrapped = new WeakSet<object>();
 
 /**
- * Wrap omp's autocomplete provider: Tab on a `?` line lists saved spells matching the words typed so
- * far; picking one hands it to `onPick` with no model call. Anything else goes to `current`.
+ * Wrap omp's autocomplete provider: Tab on a `?!`/`?!!` line lists saved commands matching the words
+ * typed so far; picking one hands it to `onPick` with no model call. Anything else, a `?` prompt
+ * spell line included, goes to `current`.
  */
 export function wrapAutocomplete<P extends CompletionProvider>(current: P, deps: SpellCompletionDeps): P {
 	if (wrapped.has(current)) return current;
 	let shown = new Map<string, SpellPick>();
 	const overrides: Partial<CompletionProvider> = {
 		async getForceFileSuggestions(lines, cursorLine, cursorCol, signal) {
-			const text = castLine(lines, cursorLine);
-			if (text === undefined) {
+			const cast = shellCastLine(lines, cursorLine);
+			if (cast === undefined) {
 				return current.getForceFileSuggestions
 					? current.getForceFileSuggestions(lines, cursorLine, cursorCol, signal)
 					: null;
 			}
-			const cast = castQuery(text)!;
 			const matches = deps.find(cast.query);
 			shown = new Map();
 			const items = matches.map((match, index) => {
 				const value = `${VALUE_PREFIX}${index}`;
-				shown.set(value, { from: text, sigil: cast.sigil, words: match.spell.words, command: match.spell.command });
+				shown.set(value, { from: cast.text, sigil: cast.sigil, words: match.spell.words, command: match.spell.command });
 				return { value, label: match.spell.words, description: match.spell.command };
 			});
-			return items.length > 0 ? { items, prefix: text.slice(0, cursorCol) } : null;
+			return items.length > 0 ? { items, prefix: cast.text.slice(0, cursorCol) } : null;
 		},
 		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
-			if (castLine(lines, cursorLine) !== undefined) return true;
+			if (shellCastLine(lines, cursorLine) !== undefined) return true;
 			return current.shouldTriggerFileCompletion
 				? current.shouldTriggerFileCompletion(lines, cursorLine, cursorCol)
 				: true;

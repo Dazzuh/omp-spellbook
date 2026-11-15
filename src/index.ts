@@ -216,8 +216,8 @@ export default function spellbook(pi: ExtensionAPI): void {
 					return;
 				}
 				case "cast": {
-					const request = parseCast(`? ${arg}`);
-					if (!request) {
+					const request = parseCast(`?! ${arg}`);
+					if (request?.kind !== "shell") {
 						say("Usage: /spellbook cast <description>", "warning");
 						return;
 					}
@@ -242,7 +242,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 							`Settings: ${location.file}`,
 							`Model: ${picked ? `${picked.model.provider}/${picked.model.id} (via ${picked.via})` : "none"}`,
 							`Shell: ${currentShell().shell}`,
-							"Type `? <description>` for a command, `?? ` for `!!`; Tab on a `?` line lists saved ones.",
+							"Type `?! <description>` for a command, `?!! ` for `!!`; Tab on a `?!` line lists saved ones.",
 						].join("\n"),
 					);
 				}
