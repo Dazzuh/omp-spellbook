@@ -15,11 +15,21 @@ import {
 } from "../src/editor";
 import spellbook from "../src/index";
 import type { CastAnswer, ContextPacket } from "../src/prompt";
+import type { PromptAnswer } from "../src/prompt-spell";
 import type { MorphStyle } from "../src/settings";
 import { Spellbook } from "../src/spellbook";
 
+const PROMPT: PromptAnswer = {
+	kind: "prompt",
+	text: "Review this repo with skill://reviewer; split the work across subagents. orchestrate",
+	explain: "Asks omp's agent to review the repo with several subagents.",
+	warnings: [],
+};
+
 /** A fake composer plus a manual clock, so frames can be counted and stepped. */
-function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotion?: boolean; gate?: Promise<void> } = {}) {
+function harness(
+	options: { answer?: CastAnswer; prompt?: PromptAnswer; style?: MorphStyle; reduceMotion?: boolean; gate?: Promise<void> } = {},
+) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-flow-"));
 	const state = {
 		text: "",
@@ -27,6 +37,7 @@ function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotio
 		history: [] as string[],
 		notes: [] as string[],
 		asked: [] as ContextPacket[],
+		askedPrompts: [] as string[],
 		timers: [] as (() => void)[],
 	};
 	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
@@ -60,6 +71,11 @@ function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotio
 			state.asked.push(packet);
 			await options.gate;
 			return { answer, model: "test/model" };
+		},
+		askPrompt: async description => {
+			state.askedPrompts.push(description);
+			await options.gate;
+			return { answer: options.prompt ?? PROMPT, model: "test/model" };
 		},
 		setTimeout: fn => {
 			state.timers.push(fn);
@@ -112,11 +128,12 @@ describe("?! and ?!!", () => {
 		expect(h.submit("!ls")).toBeUndefined();
 	});
 
-	test("a ? prompt spell is not cast yet: it passes through to omp, no model call", async () => {
-		expect(h.submit("? get a few agents to review this repo")).toBeUndefined();
+	test("? <desc> is taken from omp and cast as a prompt: the description alone goes to the prompt model", async () => {
+		expect(h.submit("? get a few agents to review this repo")).toEqual({ handled: true });
 		await h.flush();
 		expect(h.state.asked).toHaveLength(0);
-		expect(h.state.text).toBe("");
+		expect(h.state.askedPrompts).toEqual(["get a few agents to review this repo"]);
+		expect(h.state.text).toBe(PROMPT.text);
 	});
 
 	test("?? and ?!!! are not spells", async () => {
@@ -227,9 +244,9 @@ describe("spellbook file and Tab", () => {
 		};
 		const picks: string[] = [];
 		const provider = wrapAutocomplete(base, {
-			find: q => h.book.find(q),
+			find: (q, kind) => h.book.find(q, undefined, kind),
 			onPick: pick => {
-				picks.push(pick.command);
+				if (pick.kind === "command") picks.push(pick.command);
 				h.book.pick(pick);
 			},
 		});
@@ -239,9 +256,9 @@ describe("spellbook file and Tab", () => {
 		expect(suggestions?.items).toEqual([
 			{ value: "spellbook:0", label: "list files here", description: "ls -la --color" },
 		]);
-		// Non-spell lines, and ? prompt spell lines, still get omp's own completion: never saved commands.
+		// Non-spell lines still get omp's own completion; a ? line never offers saved commands.
 		expect((await provider.getForceFileSuggestions!(["src/"], 0, 4))?.items[0]!.value).toBe("file");
-		expect((await provider.getForceFileSuggestions!(["? list"], 0, 6))?.items[0]!.value).toBe("file");
+		expect(await provider.getForceFileSuggestions!(["? list"], 0, 6)).toBeNull();
 		expect((await provider.getForceFileSuggestions!(["?? list"], 0, 7))?.items[0]!.value).toBe("file");
 
 		// Picking needs no model call and lands as !<command>.
@@ -262,7 +279,7 @@ describe("spellbook file and Tab", () => {
 		h.book.onUserBash("ls -la");
 		const base: CompletionProvider = { applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }) };
 		const provider = wrapAutocomplete(base, {
-			find: q => h.book.find(q),
+			find: (q, kind) => h.book.find(q, undefined, kind),
 			onPick: pick => h.book.pick(pick),
 		});
 		const suggestions = await provider.getForceFileSuggestions!(["?!! list"], 0, 8);
@@ -558,6 +575,167 @@ describe("/spellbook cast", () => {
 		};
 		await commands.get("spellbook")!.handler("cast list files here", ctx);
 		expect(texts[0]).toBe("?! list files here");
+		expect(notes.join("\n")).toContain("no model");
+	});
+});
+
+describe("prompt spells", () => {
+	/** omp's input hook for `text`, then (for a `!` line) its user_bash hook, as Enter does. */
+	const send = (text: string) => {
+		const result = h.submit(text);
+		if (text.startsWith("!")) h.book.onUserBash(text.replace(/^!!?/, ""));
+		return result;
+	};
+	const provider = () =>
+		wrapAutocomplete<CompletionProvider>(
+			{
+				applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+				getForceFileSuggestions: async () => ({ items: [{ value: "file", label: "file" }], prefix: "" }),
+			},
+			{ find: (q, kind) => h.book.find(q, undefined, kind), onPick: pick => h.book.pick(pick) },
+		);
+
+	test("? <desc> morphs into the prompt and waits: nothing is sent until Enter", async () => {
+		h = harness();
+		expect(h.submit("? get a few agents to review this repo")).toEqual({ handled: true });
+		await h.flush();
+		expect(h.state.history[0]).toBe("? get a few agents to review this repo");
+		// Played as a morph (frames between the spell line and the prompt), as commands are.
+		expect(h.state.history.length).toBeGreaterThan(10);
+		expect(h.state.text).toBe(PROMPT.text);
+		expect(h.state.text.startsWith("!")).toBe(false);
+		expect(h.state.line).toContain(PROMPT.explain);
+		expect(h.display.frame).toBeUndefined();
+	});
+
+	test("motion off: the prompt appears in one step", async () => {
+		h = harness({ reduceMotion: true });
+		h.submit("? review this repo");
+		await h.flush();
+		expect(h.state.history).toEqual(["? review this repo", PROMPT.text]);
+	});
+
+	test("the line under the composer says what Spellbook changed", async () => {
+		h = harness({ prompt: { ...PROMPT, warnings: ["skill nope is not installed"] } });
+		h.submit("? review this repo");
+		await h.flush();
+		expect(h.state.line).toContain("<warning>⚠ skill nope is not installed.</warning>");
+	});
+
+	test("Enter mid-morph finishes the prompt instead of sending half of it", async () => {
+		h = harness();
+		h.submit("? review this repo");
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		for (let i = 0; i < 3; i++) h.state.timers.shift()!();
+		expect(h.submit(h.state.text)).toEqual({ handled: true });
+		expect(h.state.text).toBe(PROMPT.text);
+	});
+
+	test("a sent prompt spell is saved, and Tab on a new ? line offers it; ?! never does", async () => {
+		h = harness();
+		h.submit("? review this repo with agents");
+		await h.flush();
+		// Sent with an edit: saved as sent.
+		const sent = `${PROMPT.text} Focus on src/.`;
+		expect(send(sent)).toBeUndefined();
+		expect(readBook(path.join(h.dir, "book.json")).entries).toMatchObject([
+			{ kind: "prompt", words: "review this repo with agents", prompt: sent, uses: 1 },
+		]);
+
+		const tab = provider();
+		const suggestions = await tab.getForceFileSuggestions!(["? review"], 0, 8);
+		expect(suggestions?.items).toEqual([
+			{ value: "spellbook:0", label: "review this repo with agents", description: `${sent.slice(0, 79)}…` },
+		]);
+		expect(await tab.getForceFileSuggestions!(["?! review"], 0, 9)).toBeNull();
+
+		// Picking needs no model call and lands the prompt as saved.
+		const asked = h.state.askedPrompts.length;
+		h.state.text = "? review";
+		tab.applyCompletion(["? review"], 0, 8, suggestions!.items[0]!, "? review").onApplied!();
+		await h.flush();
+		expect(h.state.askedPrompts).toHaveLength(asked);
+		expect(h.state.text).toBe(sent);
+		// Sending the picked prompt again bumps its use count.
+		send(sent);
+		expect(readBook(path.join(h.dir, "book.json")).entries).toMatchObject([{ kind: "prompt", uses: 2 }]);
+	});
+
+	test("a saved command is never offered on a ? line, a saved prompt never on ?!", async () => {
+		h = harness();
+		h.submit("?! list files here");
+		await h.flush();
+		send("!ls -la");
+		h.submit("? list files here");
+		await h.flush();
+		send(PROMPT.text);
+		const tab = provider();
+		const onPrompt = await tab.getForceFileSuggestions!(["? list"], 0, 6);
+		const onShell = await tab.getForceFileSuggestions!(["?! list"], 0, 7);
+		expect(onPrompt?.items.map(i => i.description)).toEqual([`${PROMPT.text.slice(0, 79)}…`]);
+		expect(onShell?.items.map(i => i.description)).toEqual(["ls -la"]);
+	});
+
+	test("a prompt replaced by something else is not saved", async () => {
+		h = harness();
+		h.submit("? review this repo");
+		await h.flush();
+		send("never mind, what time is it");
+		expect(fs.existsSync(path.join(h.dir, "book.json"))).toBe(false);
+	});
+
+	test("slash commands and !omp config set lines are saved when sent, and land again from Tab", async () => {
+		h = harness({ prompt: { kind: "command", text: "/compact", explain: "", warnings: [] } });
+		h.submit("? compact the conversation");
+		await h.flush();
+		expect(h.state.text).toBe("/compact");
+		expect(h.state.line).toContain("An omp command; read it before sending.");
+		send("/compact");
+
+		h.book.deps.askPrompt = async () => ({
+			answer: { kind: "setting", text: "!omp config set tui.motion false", explain: "", warnings: [] },
+			model: "test/model",
+		});
+		h.submit("? stop the animations");
+		await h.flush();
+		expect(h.state.text).toBe("!omp config set tui.motion false");
+		send("!omp config set tui.motion false");
+		expect(readBook(path.join(h.dir, "book.json")).entries).toMatchObject([
+			{ kind: "prompt", words: "compact the conversation", prompt: "/compact" },
+			{ kind: "prompt", words: "stop the animations", prompt: "!omp config set tui.motion false" },
+		]);
+	});
+
+	test("/spellbook prompt casts its words as a ? spell", async () => {
+		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+		spellbook({
+			setLabel() {},
+			on() {},
+			registerCommand: (name: string, command: { handler(args: string, ctx: unknown): Promise<void> }) => {
+				commands.set(name, command);
+			},
+			getCommands: () => [],
+		} as never);
+		const texts: string[] = [];
+		const notes: string[] = [];
+		let text = "";
+		const ctx = {
+			hasUI: true,
+			cwd: os.tmpdir(),
+			ui: {
+				getEditorText: () => text,
+				setEditorText: (t: string) => {
+					text = t;
+					texts.push(t);
+				},
+				setWidget() {},
+				notify: (message: string) => notes.push(message),
+			},
+			models: { resolve: () => undefined, current: () => undefined },
+			sessionManager: { getBranch: () => [] },
+		};
+		await commands.get("spellbook")!.handler("prompt review this repo", ctx);
+		expect(texts[0]).toBe("? review this repo");
 		expect(notes.join("\n")).toContain("no model");
 	});
 });

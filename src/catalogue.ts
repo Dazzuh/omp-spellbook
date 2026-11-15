@@ -28,6 +28,29 @@ export interface CatalogueSources {
 	docNames: readonly string[];
 	/** A doc page's text (`getEmbeddedDoc`), `undefined` when missing. */
 	readDoc: (name: string) => Promise<string | undefined>;
+	/** omp's setting definitions (the config registry's `all()`), for `omp config set` lines; optional. */
+	settings?: ReadonlyArray<SettingSource>;
+}
+
+/** One omp setting definition, as the config registry holds it. */
+export interface SettingSource {
+	id: string;
+	type: string;
+	values?: readonly string[];
+	default?: unknown;
+	/** Credentials are never offered to the model. */
+	credential?: boolean;
+	ui?: { label?: string; description?: string };
+}
+
+/** One omp setting as the model sees it. */
+export interface SettingEntry {
+	id: string;
+	type: string;
+	values: readonly string[];
+	/** The default as JSON text, or empty when there is none. */
+	default: string;
+	description: string;
 }
 
 /** Each description is cut to this many characters (code points) in the full render. */
@@ -97,6 +120,10 @@ export class Catalogue {
 		readonly keywords: readonly string[],
 		readonly docs: readonly string[],
 		private readonly readDoc: CatalogueSources["readDoc"],
+		/** Trigger words of the magic keywords that are switched off: a prompt spell never writes them. */
+		readonly disabledKeywords: readonly string[] = [],
+		/** omp settings a `!omp config set` line may name; never credentials. */
+		readonly settings: readonly SettingEntry[] = [],
 	) {}
 
 	/**
@@ -174,10 +201,27 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 			.map(c => ({ name: c.name, description: describe(c.description) })),
 	]);
 	const on = (id: string) => sources.setting(id) !== false;
-	const keywords = on("magicKeywords.enabled")
-		? sources.keywords.filter(k => on(`magicKeywords.${k.id}`)).map(k => k.word)
-		: [];
-	return new Catalogue(skills, commands, keywords, [...sources.docNames], sources.readDoc);
+	const master = on("magicKeywords.enabled");
+	const keywords = sources.keywords.filter(k => master && on(`magicKeywords.${k.id}`)).map(k => k.word);
+	const disabledKeywords = sources.keywords.map(k => k.word).filter(word => !keywords.includes(word));
+	const settings = (sources.settings ?? [])
+		.filter(s => !s.credential)
+		.map(s => ({
+			id: s.id,
+			type: s.type,
+			values: [...(s.values ?? [])],
+			default: s.default === undefined ? "" : JSON.stringify(s.default),
+			description: describe([s.ui?.label, s.ui?.description].filter(Boolean).join(": ")),
+		}));
+	return new Catalogue(
+		skills,
+		commands,
+		keywords,
+		[...sources.docNames],
+		sources.readDoc,
+		disabledKeywords,
+		settings,
+	);
 }
 
 /**
@@ -185,7 +229,7 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
  * or event, not during extension load), magic keywords with their settings, and the doc index.
  */
 export async function readOmpCatalogue(pi: Pick<ExtensionAPI, "getCommands">): Promise<Catalogue> {
-	const [{ BUILTIN_SLASH_COMMAND_DEFS }, { MAGIC_KEYWORDS }, { getDocFilenames, getEmbeddedDoc }, { lookup }, omp] =
+	const [{ BUILTIN_SLASH_COMMAND_DEFS }, { MAGIC_KEYWORDS }, { getDocFilenames, getEmbeddedDoc }, { lookup, all }, omp] =
 		await Promise.all([
 			import("@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry"),
 			import("@oh-my-pi/pi-coding-agent/modes/magic-keywords"),
@@ -197,8 +241,16 @@ export async function readOmpCatalogue(pi: Pick<ExtensionAPI, "getCommands">): P
 		builtins: BUILTIN_SLASH_COMMAND_DEFS,
 		commands: pi.getCommands(),
 		keywords: MAGIC_KEYWORDS,
-		setting: id => lookup(id)?.get(omp.settings),
+		// Before omp's settings load (tests, early events) every keyword counts as on, its default.
+		setting: id => {
+			try {
+				return lookup(id)?.get(omp.settings);
+			} catch {
+				return undefined;
+			}
+		},
 		docNames: getDocFilenames(),
 		readDoc: getEmbeddedDoc,
+		settings: all().map(s => s.definition as SettingSource),
 	});
 }

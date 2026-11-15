@@ -10,6 +10,8 @@ import { pickModel, replyText } from "./model";
 import { parseCast } from "./parse";
 import { describeOs, detectShell, liveProbe, readSshHosts, type ShellInfo } from "./platform";
 import { buildSystemPrompt, buildUserMessage, parseAnswer } from "./prompt";
+import { castPrompt, PROMPT_MAX_TOKENS } from "./prompt-spell";
+import { readOmpCatalogue } from "./catalogue";
 import {
 	MORPH_STYLES,
 	parseStyle,
@@ -96,6 +98,28 @@ export default function spellbook(pi: ExtensionAPI): void {
 		if (!live) throw new Error("Spellbook used before session start");
 		return live;
 	};
+	/** One completion on the Spellbook model (role `spellbook`, else `smol`, else the session model). */
+	const complete = async (
+		request: { system: string; user: string },
+		maxTokens: number,
+		signal: AbortSignal,
+	): Promise<{ text: string; model: string }> => {
+		const ctx = ctxNow();
+		const picked = pickModel(ctx.models);
+		if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
+		const model = picked.model;
+		const apiKey = await ctx.modelRegistry.getApiKey(model);
+		if (!apiKey) throw new Error(`no credential for ${model.provider}; log in with /login`);
+		const message = await completeSimple(
+			model,
+			{
+				systemPrompt: [request.system],
+				messages: [{ role: "user", content: request.user, timestamp: Date.now() }],
+			},
+			{ apiKey, maxTokens, disableReasoning: true, temperature: 0, signal },
+		);
+		return { text: replyText(message), model: `${model.provider}/${model.id}` };
+	};
 
 	const book = new Spellbook({
 		ui: {
@@ -117,23 +141,28 @@ export default function spellbook(pi: ExtensionAPI): void {
 			recentCommands: recentBashCommands(ctxNow(), current.settings.recentCommands),
 		}),
 		ask: async (packet, signal) => {
-			const ctx = ctxNow();
-			const picked = pickModel(ctx.models);
-			if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
-			const model = picked.model;
-			const apiKey = await ctx.modelRegistry.getApiKey(model);
-			if (!apiKey) throw new Error(`no credential for ${model.provider}; log in with /login`);
-			const message = await completeSimple(
-				model,
-				{
-					systemPrompt: [buildSystemPrompt(packet.shell)],
-					messages: [{ role: "user", content: buildUserMessage(packet), timestamp: Date.now() }],
-				},
-				{ apiKey, maxTokens: MAX_TOKENS, disableReasoning: true, temperature: 0, signal },
+			const { text, model } = await complete(
+				{ system: buildSystemPrompt(packet.shell), user: buildUserMessage(packet) },
+				MAX_TOKENS,
+				signal,
 			);
-			const answer = parseAnswer(replyText(message));
-			if (!answer) throw new Error(`${model.id} gave no command`);
-			return { answer, model: `${model.provider}/${model.id}` };
+			const answer = parseAnswer(text);
+			if (!answer) throw new Error(`${model} gave no command`);
+			return { answer, model };
+		},
+		askPrompt: async (description, signal) => {
+			let model = "";
+			const answer = await castPrompt(
+				description,
+				await readOmpCatalogue(pi),
+				async request => {
+					const reply = await complete(request, PROMPT_MAX_TOKENS, signal);
+					model = reply.model;
+					return reply.text;
+				},
+				id => lookup(id) !== undefined,
+			);
+			return { answer, model };
 		},
 		setTimeout: (fn, ms) => ctxNow().setTimeout(fn, ms),
 		clearTimeout: handle => live?.clearTimer(handle as never),
@@ -148,7 +177,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 		// Re-added on every session_start (/new, resume); wrapAutocomplete skips a provider it already wrapped.
 		ctx.ui.addAutocompleteProvider(provider =>
 			wrapAutocomplete(provider, {
-				find: query => book.find(query),
+				find: (query, kind) => book.find(query, undefined, kind),
 				onPick: pick => book.pick(pick),
 			}),
 		);
@@ -172,9 +201,9 @@ export default function spellbook(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("spellbook", {
-		description: "Spellbook: settings, saved commands, or cast <description>",
+		description: "Spellbook: settings, saved spells, cast <description> (a command) or prompt <description>",
 		getArgumentCompletions: prefix =>
-			["style", "book", "list", "cast", ...MORPH_STYLES.map(s => `style ${s}`)]
+			["style", "book", "list", "cast", "prompt", ...MORPH_STYLES.map(s => `style ${s}`)]
 				.filter(option => option.startsWith(prefix))
 				.map(option => ({ value: option, label: option })),
 		handler: async (args, ctx) => {
@@ -207,12 +236,12 @@ export default function spellbook(pi: ExtensionAPI): void {
 					return;
 				}
 				case "list": {
-					const matches = book.find(arg, 20);
-					say(
-						matches.length
-							? matches.map(m => `${m.spell.words} → ${m.spell.command}`).join("\n")
-							: "No saved commands match.",
-					);
+					const commands = book.find(arg, 20).map(m => `${m.spell.words} → ${m.spell.command}`);
+					const prompts = book
+						.find(arg, 20, "prompt")
+						.map(m => `${m.spell.words} → (prompt) ${m.spell.prompt.split(/\r?\n/, 1)[0]}`);
+					const lines = [...commands, ...prompts];
+					say(lines.length ? lines.join("\n") : "No saved spells match.");
 					return;
 				}
 				case "cast": {
@@ -233,6 +262,20 @@ export default function spellbook(pi: ExtensionAPI): void {
 					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model })}\n`);
 					return;
 				}
+				case "prompt": {
+					const request = parseCast(`? ${arg}`);
+					if (request?.kind !== "prompt") {
+						say("Usage: /spellbook prompt <description>", "warning");
+						return;
+					}
+					if (ctx.hasUI) {
+						await book.cast(request);
+						return;
+					}
+					const result = await book.deps.askPrompt(request.description, AbortSignal.timeout(90_000));
+					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model })}\n`);
+					return;
+				}
 				default: {
 					const picked = pickModel(ctx.models);
 					say(
@@ -242,7 +285,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 							`Settings: ${location.file}`,
 							`Model: ${picked ? `${picked.model.provider}/${picked.model.id} (via ${picked.via})` : "none"}`,
 							`Shell: ${currentShell().shell}`,
-							"Type `?! <description>` for a command, `?!! ` for `!!`; Tab on a `?!` line lists saved ones.",
+							"Type `? <description>` for an omp prompt, `?! <description>` for a command (`?!!` for `!!`); Tab on a `?` or `?!` line lists saved ones.",
 						].join("\n"),
 					);
 				}

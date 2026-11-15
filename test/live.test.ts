@@ -30,10 +30,10 @@ interface Cast {
 	model: string;
 }
 
-/** Run `/spellbook cast` in stock omp, isolated from other extensions; `roles` goes in a config overlay. */
-function cast(description: string, extra: string[]): Cast {
+/** Run a `/spellbook` subcommand in stock omp, isolated from other extensions, and parse its JSON answer. */
+function run<T>(subcommand: string, description: string, extra: string[]): T {
 	const proc = Bun.spawnSync(
-		[...OMP, "--no-extensions", "-e", REPO, ...extra, "-p", `/spellbook cast ${description}`],
+		[...OMP, "--no-extensions", "-e", REPO, ...extra, "-p", `/spellbook ${subcommand} ${description}`],
 		{
 			cwd: REPO,
 			env: { ...process.env, SPELLBOOK_BOOK: path.join(tmp, "book.json") },
@@ -47,7 +47,20 @@ function cast(description: string, extra: string[]): Cast {
 		.reverse()
 		.find(l => l.trim().startsWith("{"));
 	if (!line) throw new Error(`no answer from omp (exit ${proc.exitCode}):\n${out}\n${proc.stderr.toString()}`);
-	return JSON.parse(line) as Cast;
+	return JSON.parse(line) as T;
+}
+
+/** `/spellbook cast`: a shell command; `roles` goes in a config overlay. */
+function cast(description: string, extra: string[]): Cast {
+	return run<Cast>("cast", description, extra);
+}
+
+interface PromptCast {
+	kind: "prompt" | "command" | "setting";
+	text: string;
+	explain: string;
+	warnings: string[];
+	model: string;
 }
 
 function overlay(roles: Record<string, string>): string[] {
@@ -94,5 +107,26 @@ describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 	test("a destructive description is flagged", () => {
 		const answer = cast("delete every .log file below here", overlay({ spellbook: MODEL }));
 		expect(answer.destructive).toBe(true);
+	}, 240_000);
+
+	test("? prompt spell: a fan-out task gets orchestrate and stays a prompt", () => {
+		const answer = run<PromptCast>("prompt", "get a few agents to review this repo for bugs", overlay({ spellbook: MODEL }));
+		console.log(`${process.platform} | ? review → ${answer.text}`);
+		expect(answer.kind).toBe("prompt");
+		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
+		expect(answer.text).not.toMatch(/^[!?/]/);
+		expect(answer.text).not.toMatch(/skill:(?!\/\/)/);
+	}, 240_000);
+
+	test("? prompt spell: an omp command becomes the slash command", () => {
+		const answer = run<PromptCast>("prompt", "compact the conversation", overlay({ spellbook: MODEL }));
+		expect(answer).toMatchObject({ kind: "command", text: "/compact" });
+	}, 240_000);
+
+	test("? prompt spell: a setting becomes !omp config set with a real key", () => {
+		const answer = run<PromptCast>("prompt", "turn off auto compaction", overlay({ spellbook: MODEL }));
+		expect(answer.kind).toBe("setting");
+		expect(answer.text).toMatch(/^!omp config set compaction\.\S+ \S+/);
+		expect(answer.warnings).toEqual([]);
 	}, 240_000);
 });

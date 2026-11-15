@@ -1,9 +1,21 @@
-import { addSpell, BookReadError, findSpells, readBook, type SpellKind, type SpellMatch, type SpellOf, writeBook } from "./book";
+import {
+	addPromptSpell,
+	addSpell,
+	BookReadError,
+	findSpells,
+	readBook,
+	type SpellKind,
+	type SpellMatch,
+	type SpellOf,
+	tokens,
+	writeBook,
+} from "./book";
 import { destructiveReason } from "./danger";
 import type { MorphDisplay } from "./editor";
 import { FRAME_MS, morphFrames } from "./morph";
-import { castPrefix, parseCast, parseShellLine, type ShellCast } from "./parse";
+import { type CastRequest, castPrefix, parseCast, parseShellLine, type PromptCast, type ShellCast } from "./parse";
 import type { CastAnswer, ContextPacket } from "./prompt";
+import type { PromptAnswer } from "./prompt-spell";
 import type { SpellbookSettings } from "./settings";
 import type { SpellPick } from "./autocomplete";
 
@@ -25,18 +37,29 @@ export interface SpellbookDeps {
 	reduceMotion(): boolean;
 	/** The context packet minus the description and spells. */
 	context(): Omit<ContextPacket, "description" | "spells">;
-	/** Ask the model; resolves with its answer and the model's name. */
+	/** Ask the model for a command; resolves with its answer and the model's name. */
 	ask(packet: ContextPacket, signal: AbortSignal): Promise<{ answer: CastAnswer; model: string }>;
+	/** Ask the model for a prompt from the description and omp's catalogue alone; resolves with the landed answer. */
+	askPrompt(description: string, signal: AbortSignal): Promise<{ answer: PromptAnswer; model: string }>;
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 	paint(color: string, text: string): string;
 }
 
-/** A command Spellbook put in the composer, waiting to be sent so it can be saved. */
-interface Pending {
-	words: string;
-	sigil: "!" | "!!";
-	command: string;
+/**
+ * What Spellbook put in the composer, waiting to be sent so it can be saved: a command (sent
+ * through `user_bash`) or a prompt spell's text (sent through `input`, or through `user_bash` for
+ * a `!omp config set` line).
+ */
+type Pending =
+	| { kind: "command"; words: string; sigil: "!" | "!!"; command: string }
+	| { kind: "prompt"; words: string; text: string };
+
+/** What a cast lands: the composer text, the line under it, and what to save once it is sent. */
+interface Landing {
+	target: string;
+	line: string;
+	pending: Pending;
 }
 
 /** The plain-words line under the composer: what the command does, with a warning first when it destroys data. */
@@ -45,6 +68,32 @@ export function plainWordsLine(answer: CastAnswer, paint: (color: string, text: 
 	const explain = answer.explain || "No explanation from the model; read the command before sending it.";
 	if (!reason) return `${paint("accent", "✦")} ${explain}`;
 	return `${paint("error", `⚠ Destructive: ${reason}.`)} ${explain}`;
+}
+
+const PROMPT_EXPLAIN: Record<PromptAnswer["kind"], string> = {
+	prompt: "A prompt for omp's agent; read it before sending.",
+	command: "An omp command; read it before sending.",
+	setting: "Changes an omp setting when sent.",
+};
+
+/** The line under the composer for a prompt spell: what sending it does, then anything Spellbook changed. */
+export function promptWordsLine(answer: PromptAnswer, paint: (color: string, text: string) => string): string {
+	const line = `${paint("accent", "✦")} ${answer.explain || PROMPT_EXPLAIN[answer.kind]}`;
+	return answer.warnings.length ? `${line} ${paint("warning", `⚠ ${answer.warnings.join("; ")}.`)}` : line;
+}
+
+/**
+ * Whether `sent` is still the prompt Spellbook landed, edits allowed: the same slash command, or
+ * at least half of the landed prompt's words.
+ */
+export function stillThePrompt(landed: string, sent: string): boolean {
+	if (landed.startsWith("/")) return sent.split(/\s+/, 1)[0] === landed.split(/\s+/, 1)[0];
+	const want = new Set(tokens(landed));
+	if (want.size === 0) return false;
+	const have = new Set(tokens(sent));
+	let shared = 0;
+	for (const word of want) if (have.has(word)) shared++;
+	return shared * 2 >= want.size;
 }
 
 export class Spellbook {
@@ -67,9 +116,9 @@ export class Spellbook {
 	}
 
 	/**
-	 * The `input` hook: a `?!`/`?!!` line is taken and cast (returns `{ handled: true }`); a `?` prompt
-	 * spell line is left to omp for now. Enter during a morph is taken too and finishes the morph, so
-	 * a half-drawn command never runs; a `!` line keeps a pending spell for `user_bash` to save;
+	 * The `input` hook: a `?`, `?!` or `?!!` line is taken and cast (returns `{ handled: true }`).
+	 * Enter during a morph is taken too and finishes the morph, so a half-drawn spell never goes
+	 * out. A sent prompt spell is saved; a `!` line keeps a pending spell for `user_bash` to save;
 	 * anything else drops it and any cast still in flight.
 	 */
 	onInput(text: string): { handled: true } | undefined {
@@ -80,40 +129,57 @@ export class Spellbook {
 			return { handled: true };
 		}
 		const cast = parseCast(text);
-		if (cast?.kind === "shell") {
+		if (cast) {
 			void this.cast(cast);
 			return { handled: true };
 		}
 		this.#castAbort?.abort();
-		if (!parseShellLine(text)) this.#pending = undefined;
+		const pending = this.#pending;
+		const shell = parseShellLine(text);
+		if (pending?.kind === "prompt" && !shell && stillThePrompt(pending.text, text.trim())) {
+			this.#save(pending.words, "prompt", text.trim());
+		}
+		if (!shell) this.#pending = undefined;
 		this.deps.ui.setLine(undefined);
 		return undefined;
 	}
 
 	/**
 	 * The `user_bash` hook: save the command that was sent under the words that asked for it. An
-	 * edited command is saved as sent; a command for another program is not the spell's answer.
+	 * edited command is saved as sent; a command for another program is not the spell's answer. A
+	 * prompt spell that landed as `!omp config set …` is saved as a prompt spell, `!` included.
 	 */
 	onUserBash(command: string): void {
 		const pending = this.#pending;
 		this.#pending = undefined;
 		if (!pending || !command.trim()) return;
+		const landed = pending.kind === "command" ? { sigil: pending.sigil, command: pending.command } : parseShellLine(pending.text);
+		if (!landed) return;
 		const [sentProgram] = command.trim().split(/\s+/, 1);
-		const [spellProgram] = pending.command.trim().split(/\s+/, 1);
+		const [spellProgram] = landed.command.trim().split(/\s+/, 1);
 		if (sentProgram !== spellProgram) return;
+		if (pending.kind === "command") this.#save(pending.words, "command", command);
+		else this.#save(pending.words, "prompt", `${landed.sigil}${command.trim()}`);
+	}
+
+	#save(words: string, kind: SpellKind, text: string): void {
 		const file = this.deps.bookFile();
 		try {
-			writeBook(file, addSpell(readBook(file), pending.words, command));
+			const book = readBook(file);
+			writeBook(file, kind === "command" ? addSpell(book, words, text) : addPromptSpell(book, words, text));
 		} catch (error) {
 			this.deps.ui.notify(
-				`Spellbook could not save "${pending.words}": ${error instanceof Error ? error.message : String(error)}`,
+				`Spellbook could not save "${words}": ${error instanceof Error ? error.message : String(error)}`,
 				"warning",
 			);
 		}
 	}
 
-	/** Turn a description into a command and morph it into the composer. Never runs anything. */
-	async cast(request: ShellCast): Promise<void> {
+	/**
+	 * Turn a description into a command (`?!`/`?!!`) or an omp prompt (`?`) and morph it into the
+	 * composer. Never sends or runs anything.
+	 */
+	async cast(request: CastRequest): Promise<void> {
 		const { ui } = this.deps;
 		this.#castAbort?.abort();
 		this.#stopMorph();
@@ -121,12 +187,15 @@ export class Spellbook {
 		this.#castAbort = abort;
 		const typed = `${castPrefix(request)} ${request.description}`;
 		ui.setText(typed);
-		ui.setLine(`${this.deps.paint("dim", "✦ Spellbook is finding the command…")}`);
+		const waiting = request.kind === "prompt" ? "✦ Spellbook is writing the prompt…" : "✦ Spellbook is finding the command…";
+		ui.setLine(this.deps.paint("dim", waiting));
 		this.#setCasting(typed);
-		const spells = this.find(request.description, 5).map(m => ({ words: m.spell.words, command: m.spell.command }));
-		let result: { answer: CastAnswer; model: string };
+		let landing: Landing;
 		try {
-			result = await this.deps.ask({ ...this.deps.context(), description: request.description, spells }, abort.signal);
+			landing =
+				request.kind === "prompt"
+					? await this.#askPrompt(request, abort.signal)
+					: await this.#askShell(request, abort.signal);
 		} catch (error) {
 			if (abort.signal.aborted) return;
 			ui.setLine(undefined);
@@ -139,25 +208,49 @@ export class Spellbook {
 			}
 		}
 		if (abort.signal.aborted) return;
-		const { answer } = result;
-		const target = `${request.sigil}${answer.command}`;
-		const line = plainWordsLine(answer, this.deps.paint);
 		if (ui.getText() !== typed) {
-			// The user moved on while the model answered: offer the command without clobbering their text.
-			ui.setLine(`${line} ${this.deps.paint("dim", `(not inserted: ${target})`)}`);
+			// The user moved on while the model answered: offer the answer without clobbering their text.
+			ui.setLine(`${landing.line} ${this.deps.paint("dim", `(not inserted: ${landing.target})`)}`);
 			return;
 		}
-		ui.setLine(line);
-		this.#pending = { words: request.description, sigil: request.sigil, command: answer.command };
-		this.morph(typed, target);
+		ui.setLine(landing.line);
+		this.#pending = landing.pending;
+		this.morph(typed, landing.target);
+	}
+
+	async #askShell(request: ShellCast, signal: AbortSignal): Promise<Landing> {
+		const spells = this.find(request.description, 5).map(m => ({ words: m.spell.words, command: m.spell.command }));
+		const { answer } = await this.deps.ask({ ...this.deps.context(), description: request.description, spells }, signal);
+		return {
+			target: `${request.sigil}${answer.command}`,
+			line: plainWordsLine(answer, this.deps.paint),
+			pending: { kind: "command", words: request.description, sigil: request.sigil, command: answer.command },
+		};
+	}
+
+	async #askPrompt(request: PromptCast, signal: AbortSignal): Promise<Landing> {
+		const { answer } = await this.deps.askPrompt(request.description, signal);
+		return {
+			target: answer.text,
+			line: promptWordsLine(answer, this.deps.paint),
+			pending: { kind: "prompt", words: request.description, text: answer.text },
+		};
 	}
 
 	/** A spell picked from the Tab list: into the composer with no model call. */
 	pick(pick: SpellPick): void {
 		this.#castAbort?.abort();
-		this.#pending = { words: pick.words, sigil: pick.sigil, command: pick.command };
-		this.deps.ui.setLine(plainWordsLine({ command: pick.command, explain: `Saved for "${pick.words}".`, destructive: false }, this.deps.paint));
-		this.morph(this.deps.ui.getText(), `${pick.sigil}${pick.command}`);
+		const { ui, paint } = this.deps;
+		const saved = `Saved for "${pick.words}".`;
+		if (pick.kind === "prompt") {
+			this.#pending = { kind: "prompt", words: pick.words, text: pick.prompt };
+			ui.setLine(`${paint("accent", "✦")} ${saved}`);
+			this.morph(ui.getText(), pick.prompt);
+			return;
+		}
+		this.#pending = { kind: "command", words: pick.words, sigil: pick.sigil, command: pick.command };
+		ui.setLine(plainWordsLine({ command: pick.command, explain: saved, destructive: false }, paint));
+		this.morph(ui.getText(), `${pick.sigil}${pick.command}`);
 	}
 
 	/** Play the configured morph from `from` to `to`; with motion off, jump straight to `to`. */
