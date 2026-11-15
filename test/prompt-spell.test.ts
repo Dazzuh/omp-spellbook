@@ -4,6 +4,7 @@ import {
 	buildPromptRequest,
 	castPrompt,
 	hasKeyword,
+	keywordHints,
 	matchSettings,
 	pickDocPages,
 	PROMPT_REQUEST_BUDGET,
@@ -92,14 +93,28 @@ describe("skills are named as skill://<name>, installed ones only", () => {
 		expect([...answer.text.matchAll(/\/?skill:(?:\/\/)?[\w.-]*\w/g)].map(m => m[0]).sort()).toEqual(
 			["skill://git-workflow-and-versioning", "skill://kata", "skill://tarkov-wiki"].sort(),
 		);
-		expect(answer.text).not.toMatch(/skill:(?!\/\/)/);
+		expect(answer.text).not.toMatch(/skill:(?!\/\/[A-Za-z0-9])/);
 		expect(answer.text).toContain("then skill://tarkov-wiki.");
 		expect(answer.warnings).toEqual(["skill made-up-skill is not installed", "skill nope is not installed"]);
 	});
 
 	test("a slash command that is really a /skill: token becomes a prompt naming the skill", async () => {
-		const { answer } = await cast("use kata to file it", { kind: "command", text: "/skill:kata file the flaky test" });
-		expect(answer).toMatchObject({ kind: "prompt", text: "Use skill://kata file the flaky test" });
+		for (const text of ["/skill:kata file the flaky test", "/skill://kata file the flaky test"]) {
+			const { answer } = await cast("use kata to file it", { kind: "command", text });
+			expect(answer).toMatchObject({ kind: "prompt", text: "Use skill://kata file the flaky test", warnings: [] });
+		}
+		const missing = await cast("use nope", { kind: "command", text: "/skill:nope go" });
+		expect(missing.answer).toMatchObject({ kind: "prompt", text: "Use nope go", warnings: ["skill nope is not installed"] });
+	});
+
+	test("a slash command's arguments get the same check: installed skills only, enabled keywords only", async () => {
+		const { answer } = await cast(
+			"review the diff",
+			{ kind: "command", text: "/compact skill://nope and orchestrate" },
+			catalogue({ off: ["magicKeywords.orchestrate"] }),
+		);
+		expect(answer.text).toBe("/compact nope and");
+		expect(answer.warnings).toEqual(["skill nope is not installed", "orchestrate is switched off"]);
 	});
 });
 
@@ -139,6 +154,26 @@ describe("magic keywords", () => {
 		});
 	}
 
+	test("a negated or ordinary description never gets a keyword forced on", async () => {
+		const all = KEYWORDS.map(k => k.word);
+		for (const description of [
+			"do not use subagents, review the diff myself",
+			"review this without sub-agents",
+			"don't think hard about this, just rename the variable",
+			"run the unit tests in parallel",
+			"parallelize the image resize in the build script",
+			"some agents are failing the health check",
+		]) {
+			expect(keywordHints(description, all)).toEqual([]);
+		}
+		expect(keywordHints("fan the review out to subagents, then think hard about the results", all)).toEqual([
+			"ultrathink",
+			"orchestrate",
+		]);
+		const { answer } = await cast("do not use subagents, review the diff myself", { text: "Review the diff yourself." });
+		expect(answer.text).toBe("Review the diff yourself.");
+	});
+
 	test("keyword boundaries match omp's: code-ish uses are not keywords", () => {
 		expect(hasKeyword("please orchestrate this", "orchestrate")).toBe(true);
 		expect(hasKeyword("orchestrate.", "orchestrate")).toBe(true);
@@ -173,13 +208,33 @@ describe("omp commands and settings", () => {
 	});
 
 	test("however the model writes a config line, it lands with one ! and omp in front", async () => {
-		for (const text of ["!omp config set tui.motion false", "config set tui.motion false", "!!omp config set tui.motion false"]) {
-			const { answer } = await cast("stop the animations", { text });
+		for (const reply of [
+			{ text: "!omp config set tui.motion false" },
+			{ text: "omp config set tui.motion false" },
+			{ text: "!!omp config set tui.motion false" },
+			{ kind: "setting", text: "config set tui.motion false" },
+		]) {
+			const { answer } = await cast("stop the animations", reply);
 			expect(answer).toMatchObject({ kind: "setting", text: "!omp config set tui.motion false" });
 		}
 		// A prompt that merely begins with a ! is never left as a shell line.
 		const { answer } = await cast("review", { kind: "prompt", text: "!Review the repo" });
 		expect(answer).toMatchObject({ kind: "prompt", text: "Review the repo" });
+	});
+
+	test("prose that only looks like a config line stays a prompt, never a ! line", async () => {
+		const { answer } = await cast("the deploy config", { text: "config set to prod is wrong, fix it" });
+		expect(answer).toMatchObject({ kind: "prompt", text: "config set to prod is wrong, fix it" });
+	});
+
+	test("a prompt that is really a known slash command lands as the command", async () => {
+		const { answer } = await cast("compact but keep the plan", { kind: "prompt", text: "/compact keep the plan" });
+		expect(answer).toMatchObject({ kind: "command", text: "/compact keep the plan" });
+	});
+
+	test("an empty answer is an error, not an empty composer", async () => {
+		await expect(cast("anything", "```\n```")).rejects.toThrow("the model gave no prompt");
+		await expect(cast("anything", { kind: "command", text: "/" })).rejects.toThrow("the model gave no prompt");
 	});
 
 	test("a setting omp doesn't have lands with a warning", async () => {

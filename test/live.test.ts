@@ -115,7 +115,7 @@ describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 		expect(answer.kind).toBe("prompt");
 		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
 		expect(answer.text).not.toMatch(/^[!?/]/);
-		expect(answer.text).not.toMatch(/skill:(?!\/\/)/);
+		expect(answer.text).not.toMatch(/skill:(?!\/\/[A-Za-z0-9])/);
 	}, 240_000);
 
 	test("? prompt spell: an omp command becomes the slash command", () => {

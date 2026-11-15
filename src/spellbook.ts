@@ -210,7 +210,8 @@ export class Spellbook {
 		if (abort.signal.aborted) return;
 		if (ui.getText() !== typed) {
 			// The user moved on while the model answered: offer the answer without clobbering their text.
-			ui.setLine(`${landing.line} ${this.deps.paint("dim", `(not inserted: ${landing.target})`)}`);
+			const [head = "", ...more] = landing.target.split("\n");
+			ui.setLine(`${landing.line} ${this.deps.paint("dim", `(not inserted: ${head}${more.length ? " …" : ""})`)}`);
 			return;
 		}
 		ui.setLine(landing.line);

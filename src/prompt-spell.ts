@@ -54,13 +54,17 @@ const KEYWORD_USES: Record<string, string> = {
 
 /**
  * Descriptions that clearly ask for a keyword: if the model leaves an enabled one out, it is added.
- * Only unmistakable phrasings; anything subtler is the model's call.
+ * Only unmistakable phrasings ("parallel" alone is not one: tests run in parallel); anything
+ * subtler is the model's call.
  */
 const KEYWORD_CUES: Record<string, RegExp> = {
 	orchestrate:
-		/\b(?:orchestrate|in parallel|parallel(?:ise|ize)|fan (?:it |this |the work |them )?out|sub-?agents?|(?:several|multiple|many|a few|a team of|some) agents)\b/i,
+		/\b(?:orchestrate|fan (?:it |this |the work |them )?out|sub-?agents?|(?:several|multiple|a few|a team of) agents)\b/i,
 	ultrathink: /\b(?:ultrathink|think (?:really )?(?:hard|deeply|carefully)|deep(?:ly)? reason(?:ing)?)\b/i,
 };
+
+/** A negation shortly before a cue, in the same clause: "don't use subagents", "without sub-agents". */
+const NEGATED_RE = /\b(?:don'?t|do not|doesn'?t|does not|no|not|never|without|avoid)\b[^.,;:!?]{0,24}$/i;
 
 /** omp's magic-keyword boundaries (pi-tui `magicKeywordRegex`): standalone prose, case-sensitive. */
 function keywordRegex(word: string, flags = ""): RegExp {
@@ -76,9 +80,14 @@ export function hasKeyword(text: string, word: string): boolean {
 	return keywordRegex(word).test(text);
 }
 
-/** Keywords the description clearly asks for, among the enabled ones. */
+/** Keywords the description clearly asks for, among the enabled ones; a negated cue asks for nothing. */
 export function keywordHints(description: string, enabled: readonly string[]): string[] {
-	return enabled.filter(word => KEYWORD_CUES[word]?.test(description));
+	return enabled.filter(word => {
+		const cue = KEYWORD_CUES[word];
+		if (!cue) return false;
+		const match = cue.exec(description);
+		return match !== null && !NEGATED_RE.test(description.slice(0, match.index));
+	});
 }
 
 /** Cut to `maxBytes` of UTF-8 on a code-point boundary, marking the cut with an ellipsis. */
@@ -273,8 +282,9 @@ export function parsePromptReply(reply: string): RawPromptAnswer | undefined {
 			};
 		} catch {}
 	}
-	if (!text || text.startsWith("{")) return undefined;
-	return { kind: undefined, text: text.replace(/^```\w*\s*|```$/g, "").trim(), explain: "" };
+	const bare = text.replace(/^```\w*\s*|```$/g, "").trim();
+	if (!bare || bare.startsWith("{")) return undefined;
+	return { kind: undefined, text: bare, explain: "" };
 }
 
 const CONFIG_SET_RE = /^!*\s*(?:omp\s+)?config\s+set\s+(\S+)(?:\s+([\s\S]*))?$/;
@@ -299,7 +309,7 @@ function firstLine(text: string): string {
 /**
  * Make the model's answer safe to land: the right form per kind, installed skills only, enabled
  * keywords only, and an enabled keyword the description clearly asks for. `settingKnown` says
- * whether omp has a setting by that id.
+ * whether omp has a setting by that id. Throws when nothing is left to land.
  */
 export function landAnswer(
 	raw: RawPromptAnswer,
@@ -310,10 +320,12 @@ export function landAnswer(
 	const warnings: string[] = [];
 	let text = raw.text.replace(/\r\n?/g, "\n").trim();
 	let kind = raw.kind;
-	const configSet = CONFIG_SET_RE.exec(firstLine(text));
-	if (configSet && (kind === "setting" || kind === undefined || text.startsWith("!"))) kind = "setting";
+	const first = firstLine(text);
+	const configSet = CONFIG_SET_RE.exec(first);
+	// Unless the model says it is a setting, only a line written as one (`!…`, `omp config set …`)
+	// becomes one: prose such as "config set to prod is wrong" stays a prompt, never a `!` line.
+	if (configSet && (kind === "setting" || /^(?:!|omp\s)/.test(first))) kind = "setting";
 	else if (kind === "setting") kind = "prompt";
-	if (kind === undefined) kind = text.startsWith("/") ? "command" : "prompt";
 
 	if (kind === "setting") {
 		const [, key, value = ""] = configSet!;
@@ -321,22 +333,27 @@ export function landAnswer(
 		return { kind, text: `!omp config set ${key}${value.trim() ? ` ${value.trim()}` : ""}`, explain: raw.explain, warnings };
 	}
 
+	// Never a line omp would run or recast.
+	text = text.replace(/^[?!\s]+/, "");
+	const slash = /^\/(\S+)/.exec(text)?.[1];
+	// A "prompt" that is a known slash command runs as one on Enter: call it what it is.
+	if (kind === undefined || (slash !== undefined && catalogue.commands.some(c => c.name === slash))) {
+		kind = slash !== undefined ? "command" : "prompt";
+	}
 	if (kind === "command") {
 		const line = firstLine(text).replace(/^\/*/, "");
 		const name = line.split(/\s+/, 1)[0]!;
-		const skill = /^skill:(.+)$/.exec(name);
-		if (skill) {
+		if (name.startsWith("skill:")) {
 			// omp's /skill: token is a prompt to run a skill: write it as a prompt naming the skill.
 			kind = "prompt";
-			text = `Use skill://${skill[1]}${line.slice(name.length)}`;
+			text = `Use ${line}`;
 		} else {
 			if (!catalogue.commands.some(c => c.name === name)) warnings.push(`/${name} is not a command omp lists here`);
-			return { kind, text: `/${line}`, explain: raw.explain, warnings };
+			text = `/${line}`;
 		}
 	}
 
-	// A prompt: never a line omp would run or recast.
-	text = text.replace(/^[?!\s]+/, "");
+	// Arguments of a command get the same care as a prompt: installed skills only, enabled keywords only.
 	text = fixSkills(text, new Set(catalogue.skills.map(s => s.name)), warnings);
 	for (const word of catalogue.disabledKeywords) {
 		if (!hasKeyword(text, word)) continue;
@@ -347,6 +364,9 @@ export function landAnswer(
 			.trim();
 		warnings.push(`${word} is switched off`);
 	}
+	if (!text.replace(/^\//, "").trim()) throw new Error("the model gave no prompt");
+	if (kind === "command") return { kind, text, explain: raw.explain, warnings };
+
 	for (const word of keywordHints(description, catalogue.keywords)) {
 		if (hasKeyword(text, word)) continue;
 		// "Orchestrate the review" already says it: lowercase it so omp fires, rather than repeat the word.
