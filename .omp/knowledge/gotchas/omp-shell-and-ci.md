@@ -1,3 +1,7 @@
+---
+description: "gotchas, omp shell and ci, omp ! shell and CI gotchas (omp 18.20.2, omp runs bash ! lines (Linux, macOS bash, Windows Git Bash) and the Windows no-bash fallback in its embedded bash engine, the rc snapshot, not a real bash process (exec/bash-executor.ts 705-760). zsh/fish run in a real PTY. Builtins include ls, find, grep, sed, awk, cat, head, tail, wc, sort, uniq, cut, tr, xargs, tee, mkdir, rm, mv, cp, date, jq (natives CHANGELOG). MSYS-only extras such as pwd -W and cygpath fail there, To test commands…"
+---
+
 # omp `!` shell and CI gotchas (omp 18.20.2)
 
 - omp runs bash `!` lines (Linux, macOS bash, Windows Git Bash) and the Windows no-bash fallback in its **embedded bash engine** with the rc snapshot, not a real bash process (`exec/bash-executor.ts` ~705-760). zsh/fish run in a real PTY. Builtins include ls, find, grep, sed, awk, cat, head, tail, wc, sort, uniq, cut, tr, xargs, tee, mkdir, rm, mv, cp, date, jq (natives CHANGELOG). MSYS-only extras such as `pwd -W` and `cygpath` fail there.
