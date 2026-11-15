@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0
+## 0.1.0
 
 - `? <description>` turns plain words into a shell command in the omp composer as `!<command>`; `??` gives `!!`.
 - A plain-words line under the composer explains the command and warns when it is destructive.
