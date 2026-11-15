@@ -353,7 +353,17 @@ describe("editor hooks", () => {
 		]);
 	});
 
-	for (const text of ["please orchestrate this", "look at @src/index.ts", "/skill:kata do it", "!ls", "?", "???", "what? no"]) {
+	test("a bare ? or ?? is already a spell: the sigil is marked before any words are typed", () => {
+		for (const [text, from, to] of [["?", 0, 1], ["?? ", 0, 2], ["  ?", 2, 3]] as const) {
+			const { editor, lines } = spellEditor(text);
+			expect(editor.describeDecorations!(lines)).toEqual([{ from, to, s: "accent mono" }]);
+			expect(editor.decorateText!(text, { line: 0, startCol: 0, endCol: text.length })).toBe(
+				`${text.slice(0, from)}<accent>${text.slice(from, to)}</accent>${text.slice(to)}`,
+			);
+		}
+	});
+
+	for (const text of ["please orchestrate this", "look at @src/index.ts", "/skill:kata do it", "!ls", "???", "what? no", "?\nnot a spell"]) {
 		test(`not a spell, omp's own decorations: ${JSON.stringify(text)}`, () => {
 			const { editor, own, lines } = spellEditor(text);
 			expect(editor.describeDecorations!(lines)).toBe(own);

@@ -84,6 +84,7 @@ export function spellDecorations(text: string, state: { casting: boolean; motion
 	const fx = !state.motion ? undefined : state.casting ? "pulse" : "shimmer";
 	const sigil: Decoration = { ...spell.sigil, s: SPELL_SIGIL_TOKENS };
 	if (fx === "pulse") sigil.fx = fx;
+	if (!spell.description) return [sigil];
 	const description: Decoration = { ...spell.description, s: "accent" };
 	if (fx) description.fx = fx;
 	return [sigil, description];
@@ -209,18 +210,15 @@ export function hookEditor(
 		const full = editor.getText?.();
 		const spell = full === undefined ? undefined : spellRanges(full);
 		if (full === undefined || !spell || !look) return baseAnsi ? baseAnsi.call(editor, text, context) : text;
-		const animated = motion() && !look.native() && editor.focused !== false;
-		const phase = animated ? (look.now() % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS : 0;
-		if (animated) scheduleShimmer();
-		return paintRanges(
-			full,
-			[
-				{ ...spell.sigil, paint: slice => paint("accent", slice) },
-				{ ...spell.description, paint: (slice, offset) => hueSweep(slice, offset, spell.description, phase, look.hue) },
-			],
-			text,
-			context,
-		);
+		const ranges: PaintRange[] = [{ ...spell.sigil, paint: slice => paint("accent", slice) }];
+		const words = spell.description;
+		if (words) {
+			const animated = motion() && !look.native() && editor.focused !== false;
+			const phase = animated ? (look.now() % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS : 0;
+			if (animated) scheduleShimmer();
+			ranges.push({ ...words, paint: (slice, offset) => hueSweep(slice, offset, words, phase, look.hue) });
+		}
+		return paintRanges(full, ranges, text, context);
 	};
 	const baseTsp = editor.describeDecorations;
 	editor.describeDecorations = lines => {
