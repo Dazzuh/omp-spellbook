@@ -32,7 +32,11 @@ function paint(color: string, text: string): string {
 	}
 }
 
-/** omp's keyword gradient colour (`createGradientHighlighter`: saturation 90%, lightness 62%) for a hue. */
+/**
+ * omp's keyword gradient colour (`createGradientHighlighter`: saturation 90%, lightness 62%) for a hue.
+ * Before omp's theme loads, `getColorMode` throws: truecolor is assumed, as most terminals take it, and an
+ * unconvertible colour paints nothing, leaving that letter in the default colour.
+ */
 function hueColor(degrees: number): string {
 	let truecolor = true;
 	try {
@@ -78,7 +82,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 		current = readSettings(location);
 		return current.settings;
 	};
-	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
+	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 	const reduceMotion = () => !motionEffectsEnabled() || display.ternReduceMotion;
 	const look: SpellLook = {
 		motion: () => !reduceMotion(),

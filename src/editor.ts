@@ -10,8 +10,8 @@ export interface MorphDisplay {
 	ternReduceMotion: boolean;
 	/** The live editor carrying Spellbook's hooks, once installed. */
 	editor: { invalidate(): void } | undefined;
-	/** A cast is waiting on the model: the spell line pulses and Tern's glow breathes. */
-	casting: boolean;
+	/** The composer text of the cast waiting on the model; that line pulses and Tern's glow breathes. */
+	casting: string | undefined;
 	/** Ask omp for a new frame, once the editor is installed. */
 	repaint?: () => void;
 }
@@ -75,14 +75,15 @@ export interface SpellLook {
 
 /**
  * Tern decorations for a spell line: the sigil marked for the plugin's sheet, the description in
- * accent shimmering like a magic keyword; while casting both pulse. Undefined for any other line.
+ * accent shimmering like a magic keyword; while this line is being cast both pulse. Undefined for
+ * any other line.
  */
 export function spellDecorations(text: string, state: { casting: boolean; motion: boolean }): Decoration[] | undefined {
 	const spell = spellRanges(text);
 	if (!spell) return undefined;
 	const fx = !state.motion ? undefined : state.casting ? "pulse" : "shimmer";
 	const sigil: Decoration = { ...spell.sigil, s: SPELL_SIGIL_TOKENS };
-	if (state.casting && state.motion) sigil.fx = "pulse";
+	if (fx === "pulse") sigil.fx = fx;
 	const description: Decoration = { ...spell.description, s: "accent" };
 	if (fx) description.fx = fx;
 	return [sigil, description];
@@ -153,14 +154,17 @@ export function hueSweep(
 	const [from, to] = SPELL_HUE;
 	let out = "";
 	let prev = -1;
-	for (let i = 0; i < slice.length; i++) {
+	// By code point, so an escape never lands between the halves of a surrogate pair.
+	let i = 0;
+	for (const ch of slice) {
 		const t = ((offset + i - range.from) / n + phase) % 1;
 		const stop = Math.floor(t * SHIMMER_STOPS) % SHIMMER_STOPS;
 		if (stop !== prev) {
 			out += hue((from + (stop / SHIMMER_STOPS) * (to - from)) % 360);
 			prev = stop;
 		}
-		out += slice[i];
+		out += ch;
+		i += ch.length;
 	}
 	return `${out}\x1b[39m`;
 }
@@ -222,7 +226,8 @@ export function hookEditor(
 	editor.describeDecorations = lines => {
 		const frame = display.frame;
 		if (!frame) {
-			const spell = spellDecorations(lines.join("\n"), { casting: display.casting, motion: motion() });
+			const text = lines.join("\n");
+			const spell = spellDecorations(text, { casting: display.casting === text, motion: motion() });
 			if (spell) return spell;
 			return baseTsp ? baseTsp.call(editor, lines) : [];
 		}

@@ -121,7 +121,7 @@ export class Spellbook {
 		const typed = `${request.sigil === "!!" ? "??" : "?"} ${request.description}`;
 		ui.setText(typed);
 		ui.setLine(`${this.deps.paint("dim", "✦ Spellbook is finding the command…")}`);
-		this.#setCasting(true);
+		this.#setCasting(typed);
 		const spells = this.find(request.description, 5).map(m => ({ words: m.spell.words, command: m.spell.command }));
 		let result: { answer: CastAnswer; model: string };
 		try {
@@ -134,7 +134,7 @@ export class Spellbook {
 		} finally {
 			if (this.#castAbort === abort) {
 				this.#castAbort = undefined;
-				this.#setCasting(false);
+				this.#setCasting(undefined);
 			}
 		}
 		if (abort.signal.aborted) return;
@@ -186,11 +186,11 @@ export class Spellbook {
 		step();
 	}
 
-	/** Mark the spell line as waiting on the model (it pulses; Tern's glow breathes) and redraw it. */
-	#setCasting(on: boolean): void {
+	/** Mark `text` as the line waiting on the model (it pulses; Tern's glow breathes), or none, and redraw. */
+	#setCasting(text: string | undefined): void {
 		const { display } = this.deps;
-		if (display.casting === on) return;
-		display.casting = on;
+		if (display.casting === text) return;
+		display.casting = text;
 		display.editor?.invalidate();
 		display.repaint?.();
 	}

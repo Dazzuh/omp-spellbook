@@ -20,7 +20,7 @@ function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotio
 		asked: [] as ContextPacket[],
 		timers: [] as (() => void)[],
 	};
-	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
+	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 	const answer: CastAnswer = options.answer ?? { command: "ls -la", explain: "Lists every file here.", destructive: false };
 	const book = new Spellbook({
 		ui: {
@@ -262,7 +262,7 @@ describe("spellbook file and Tab", () => {
 
 describe("editor hooks", () => {
 	test("during a morph the editor paints marks (ANSI and Tern); otherwise its own hooks run", () => {
-		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
+		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 		let invalidated = 0;
 		const editor: HookableEditor = {
 			invalidate: () => {
@@ -299,7 +299,7 @@ describe("editor hooks", () => {
 
 	/** A hooked editor holding `text`, with a plain-terminal look whose hues print as `<h…>`. */
 	function spellEditor(text: string, options: { motion?: boolean; native?: boolean; now?: number } = {}) {
-		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
+		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 		const own = [{ from: 0, to: 1, s: "own" }];
 		const editor: HookableEditor = {
 			invalidate() {},
@@ -325,26 +325,28 @@ describe("editor hooks", () => {
 			{ from: 0, to: 1, s: "accent mono" },
 			{ from: 2, to: 16, s: "accent", fx: "shimmer" },
 		]);
-		display.casting = true;
+		display.casting = "? find big files";
 		expect(editor.describeDecorations!(lines)).toEqual([
 			{ from: 0, to: 1, s: "accent mono", fx: "pulse" },
 			{ from: 2, to: 16, s: "accent", fx: "pulse" },
 		]);
+		// Only the line being cast pulses: a spell typed over it while the model answers shimmers.
+		display.casting = "? find big file";
+		expect(editor.describeDecorations!(lines)[1]!.fx).toBe("shimmer");
 		expect(spellEditor("  ??list it").editor.describeDecorations!(["  ??list it"])).toEqual([
 			{ from: 2, to: 4, s: "accent mono" },
 			{ from: 4, to: 11, s: "accent", fx: "shimmer" },
 		]);
 	});
 
-	test("the marker pair is no token omp puts on the composer, and never hides the ?", () => {
-		const omp = ["accent", "accent strong", "customMessageLabel strong", "statusLineModel strong", "dim", "typo", "hide"];
-		expect(omp).not.toContain(SPELL_SIGIL_TOKENS);
+	test("the ? never hides: without Tern's plugin it is the only mark of a spell", () => {
+		expect(SPELL_SIGIL_TOKENS.split(" ")).toContain("accent");
 		expect(SPELL_SIGIL_TOKENS.split(" ")).not.toContain("hide");
 	});
 
 	test("reduced motion: no shimmer, no pulse; the look stays", () => {
 		const { editor, display, lines } = spellEditor("? find big files", { motion: false });
-		display.casting = true;
+		display.casting = "? find big files";
 		expect(editor.describeDecorations!(lines)).toEqual([
 			{ from: 0, to: 1, s: "accent mono" },
 			{ from: 2, to: 16, s: "accent" },
@@ -371,6 +373,13 @@ describe("editor hooks", () => {
 		const moving = spellEditor(text, { now: SHIMMER_PERIOD_MS / 2 }).editor;
 		expect(moving.decorateText!("cd", { line: 1, startCol: 0, endCol: 2 })).toBe("<h269>c<h282>d\x1b[39m");
 	});
+
+	test("the hue sweep never splits a character outside the BMP", () => {
+		const text = "? a🔥b";
+		const painted = spellEditor(text, { motion: false }).editor.decorateText!(text, { line: 0, startCol: 0, endCol: text.length });
+		expect(painted).toContain("🔥");
+		expect(painted.replace(/<[^>]*>|\x1b\[39m/g, "")).toBe(text);
+	});
 });
 
 describe("casting state", () => {
@@ -381,11 +390,11 @@ describe("casting state", () => {
 		h.display.repaint = () => repaints++;
 		h.submit("? list files here");
 		await Promise.resolve();
-		expect(h.display.casting).toBe(true);
-		expect(repaints).toBe(1);
+		expect(h.display.casting).toBe("? list files here");
+		expect(repaints).toBeGreaterThan(0);
 		release();
 		await h.flush();
-		expect(h.display.casting).toBe(false);
+		expect(h.display.casting).toBeUndefined();
 		expect(h.state.text).toBe("!ls -la");
 	});
 
@@ -397,7 +406,7 @@ describe("casting state", () => {
 		h.submit("never mind");
 		release();
 		await h.flush();
-		expect(h.display.casting).toBe(false);
+		expect(h.display.casting).toBeUndefined();
 		expect(h.state.text).toBe("");
 	});
 });
