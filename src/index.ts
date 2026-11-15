@@ -3,9 +3,9 @@ import { completeSimple } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir, settings as ompSettings, theme } from "@oh-my-pi/pi-coding-agent";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
-import { motionEffectsEnabled } from "@oh-my-pi/pi-tui";
+import { isNativeRendering, motionEffectsEnabled } from "@oh-my-pi/pi-tui";
 import { wrapAutocomplete } from "./autocomplete";
-import { installEditorHooks, type MorphDisplay } from "./editor";
+import { installEditorHooks, type MorphDisplay, type SpellLook } from "./editor";
 import { pickModel, replyText } from "./model";
 import { parseCast } from "./parse";
 import { describeOs, detectShell, liveProbe, readSshHosts, type ShellInfo } from "./platform";
@@ -30,6 +30,15 @@ function paint(color: string, text: string): string {
 	} catch {
 		return text;
 	}
+}
+
+/** omp's keyword gradient colour (`createGradientHighlighter`: saturation 90%, lightness 62%) for a hue. */
+function hueColor(degrees: number): string {
+	let truecolor = true;
+	try {
+		truecolor = theme.getColorMode() === "truecolor";
+	} catch {}
+	return Bun.color(`hsl(${Math.round(degrees)}, 90%, 62%)`, truecolor ? "ansi-16m" : "ansi-256") ?? "";
 }
 
 /** The shell `!` runs in, from omp's own resolution where it is readable. */
@@ -69,7 +78,14 @@ export default function spellbook(pi: ExtensionAPI): void {
 		current = readSettings(location);
 		return current.settings;
 	};
-	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined };
+	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
+	const reduceMotion = () => !motionEffectsEnabled() || display.ternReduceMotion;
+	const look: SpellLook = {
+		motion: () => !reduceMotion(),
+		hue: hueColor,
+		native: isNativeRendering,
+		now: Date.now,
+	};
 	/** The context of the latest event; ctx objects differ per event, the Spellbook state must not. */
 	let live: ExtensionContext | undefined;
 	const ctxNow = (): ExtensionContext => {
@@ -88,7 +104,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 		display,
 		settings: () => current.settings,
 		bookFile: () => resolveBookPath(location, current.settings.bookPath),
-		reduceMotion: () => !motionEffectsEnabled() || display.ternReduceMotion,
+		reduceMotion,
 		context: () => ({
 			cwd: ctxNow().cwd,
 			os: describeOs(),
@@ -132,7 +148,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 				onPick: pick => book.pick(pick),
 			}),
 		);
-		if (ctx.mode === "tui" && !display.editor) await installEditorHooks(ctx.ui, display, paint);
+		if (ctx.mode === "tui" && !display.editor) await installEditorHooks(ctx.ui, display, paint, look);
 	});
 
 	pi.on("session_shutdown", () => {

@@ -40,3 +40,24 @@ export function castQuery(text: string): { sigil: "!" | "!!"; query: string } | 
 	if (!match) return undefined;
 	return { sigil: match[1] === "??" ? "!!" : "!", query: match[2]!.trim() };
 }
+
+/** Where the parts of a spell line sit, as UTF-16 offsets into the composer text. */
+export interface SpellRanges {
+	/** The `?`/`??` sigil. */
+	sigil: { from: number; to: number };
+	/** The description, trimmed. */
+	description: { from: number; to: number };
+}
+
+/** {@link CAST_RE} with the spacing captured too, so offsets can be counted. */
+const SPELL_RE = /^(\s*)(\?\??)(?![?])([ \t]*)(\S[\s\S]*?)\s*$/;
+
+/** The sigil and description of a composer line Enter would cast (as {@link parseCast} reads it); else undefined. */
+export function spellRanges(text: string): SpellRanges | undefined {
+	const match = SPELL_RE.exec(text);
+	if (!match) return undefined;
+	const sigilFrom = match[1]!.length;
+	const sigilTo = sigilFrom + match[2]!.length;
+	const descFrom = sigilTo + match[3]!.length;
+	return { sigil: { from: sigilFrom, to: sigilTo }, description: { from: descFrom, to: descFrom + match[4]!.length } };
+}

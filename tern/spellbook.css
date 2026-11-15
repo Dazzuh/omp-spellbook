@@ -1,0 +1,74 @@
+/*
+ * Spellbook's look in omp's composer (Tern half).
+ *
+ * Spellbook (the omp plugin) marks the `?` of a spell line with the span tokens `accent mono`
+ * (classes `.sf-t-accent.sf-t-mono`), a pair omp never puts on a composer decoration, and adds
+ * `fx: "pulse"` (`.sf-fx-pulse`) while the model answers. These rules key on that mark:
+ * a `✦ spellbook` chip where omp's bash chip sits, an accent glow around the composer, and
+ * the glow breathing while casting. Colours come from the theme (`--sf-c-accent` is omp's accent).
+ */
+
+.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+	--spellbook-drop: var(--composer-shadow);
+	--composer-ring: rgb(from var(--sf-c-accent) r g b / 55%);
+	box-shadow:
+		0 0 0 1px var(--composer-ring),
+		0 0 18px 1px rgb(from var(--sf-c-accent) r g b / 26%),
+		var(--spellbook-drop),
+		inset 0 1px 0 var(--glass-hi);
+}
+
+[data-theme='dark'] .sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+	--spellbook-drop: 0 12px 30px -16px rgba(0, 0, 0, 0.6);
+}
+
+.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono.sf-fx-pulse) {
+	animation: spellbook-breathe 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes spellbook-breathe {
+	from {
+		box-shadow:
+			0 0 0 1px rgb(from var(--sf-c-accent) r g b / 55%),
+			0 0 18px 1px rgb(from var(--sf-c-accent) r g b / 26%),
+			var(--spellbook-drop),
+			inset 0 1px 0 var(--glass-hi);
+	}
+	to {
+		box-shadow:
+			0 0 0 1px rgb(from var(--sf-c-accent) r g b / 85%),
+			0 0 34px 4px rgb(from var(--sf-c-accent) r g b / 50%),
+			var(--spellbook-drop),
+			inset 0 1px 0 var(--glass-hi);
+	}
+}
+
+/* The chip: drawn like omp's bash chip (`omp.composer.mode`), in the accent. */
+[data-role='omp.composer.line']:has(> .sf-editor .sf-t-accent.sf-t-mono)::before {
+	content: '✦ spellbook';
+	flex: none;
+	height: 20px;
+	margin-top: max(0px, calc((var(--sf-lh) - 20px) / 2));
+	padding: 0 8px;
+	border-radius: 999px;
+	font: 500 11.5px/20px var(--tv-font, var(--mono));
+	white-space: nowrap;
+	color: var(--sf-c-accent);
+	background: rgb(from var(--sf-c-accent) r g b / 10%);
+	box-shadow: inset 0 0 0 1px rgb(from var(--sf-c-accent) r g b / 22%);
+}
+
+/* Reduce Motion: the glow stays, still. A hidden pane, or a sheet over it, pauses it. */
+.sf-still .sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+	animation: none;
+}
+
+:is(.sf-paused, .sf-covered) .sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+	animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+		animation: none;
+	}
+}

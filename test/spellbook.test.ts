@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { readBook } from "../src/book";
 import { type CompletionProvider, wrapAutocomplete } from "../src/autocomplete";
-import { type HookableEditor, hookEditor, type MorphDisplay } from "../src/editor";
+import { type HookableEditor, hookEditor, type MorphDisplay, SHIMMER_PERIOD_MS, SPELL_SIGIL_TOKENS, type SpellLook } from "../src/editor";
 import type { CastAnswer, ContextPacket } from "../src/prompt";
 import type { MorphStyle } from "../src/settings";
 import { Spellbook } from "../src/spellbook";
 
 /** A fake composer plus a manual clock, so frames can be counted and stepped. */
-function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotion?: boolean } = {}) {
+function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotion?: boolean; gate?: Promise<void> } = {}) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-flow-"));
 	const state = {
 		text: "",
@@ -20,7 +20,7 @@ function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotio
 		asked: [] as ContextPacket[],
 		timers: [] as (() => void)[],
 	};
-	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined };
+	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
 	const answer: CastAnswer = options.answer ?? { command: "ls -la", explain: "Lists every file here.", destructive: false };
 	const book = new Spellbook({
 		ui: {
@@ -49,6 +49,7 @@ function harness(options: { answer?: CastAnswer; style?: MorphStyle; reduceMotio
 		}),
 		ask: async packet => {
 			state.asked.push(packet);
+			await options.gate;
 			return { answer, model: "test/model" };
 		},
 		setTimeout: fn => {
@@ -261,7 +262,7 @@ describe("spellbook file and Tab", () => {
 
 describe("editor hooks", () => {
 	test("during a morph the editor paints marks (ANSI and Tern); otherwise its own hooks run", () => {
-		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined };
+		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
 		let invalidated = 0;
 		const editor: HookableEditor = {
 			invalidate: () => {
@@ -287,10 +288,116 @@ describe("editor hooks", () => {
 		expect(editor.decorateText!("def", { line: 1, startCol: 1, endCol: 4 })).toBe(
 			"<toolDiffAdded>de</toolDiffAdded>f",
 		);
+		// The `?` keeps the spell's mark through the morph, so Tern's chip and glow last until `!` lands.
 		expect(editor.describeDecorations!(["? ab", "cdef"])).toEqual([
+			{ from: 0, to: 1, s: SPELL_SIGIL_TOKENS },
 			{ from: 2, to: 3, s: "toolDiffRemoved" },
 			{ from: 6, to: 8, s: "toolDiffAdded" },
 		]);
 		expect(invalidated).toBe(0);
+	});
+
+	/** A hooked editor holding `text`, with a plain-terminal look whose hues print as `<h…>`. */
+	function spellEditor(text: string, options: { motion?: boolean; native?: boolean; now?: number } = {}) {
+		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: false };
+		const own = [{ from: 0, to: 1, s: "own" }];
+		const editor: HookableEditor = {
+			invalidate() {},
+			decorateText: (t: string) => `own(${t})`,
+			describeDecorations: () => own,
+			describe: () => "node",
+			getText: () => text,
+			focused: true,
+		};
+		const look: SpellLook = {
+			motion: () => options.motion ?? true,
+			hue: degrees => `<h${Math.round(degrees)}>`,
+			native: () => options.native ?? false,
+			now: () => options.now ?? 0,
+		};
+		hookEditor(editor, display, (color, t) => `<${color}>${t}</${color}>`, look);
+		return { editor, display, own, lines: text.split("\n") };
+	}
+
+	test("a ? line in Tern: the sigil carries the plugin's marker pair, the description shimmers like a magic keyword", () => {
+		const { editor, display, lines } = spellEditor("? find big files");
+		expect(editor.describeDecorations!(lines)).toEqual([
+			{ from: 0, to: 1, s: "accent mono" },
+			{ from: 2, to: 16, s: "accent", fx: "shimmer" },
+		]);
+		display.casting = true;
+		expect(editor.describeDecorations!(lines)).toEqual([
+			{ from: 0, to: 1, s: "accent mono", fx: "pulse" },
+			{ from: 2, to: 16, s: "accent", fx: "pulse" },
+		]);
+		expect(spellEditor("  ??list it").editor.describeDecorations!(["  ??list it"])).toEqual([
+			{ from: 2, to: 4, s: "accent mono" },
+			{ from: 4, to: 11, s: "accent", fx: "shimmer" },
+		]);
+	});
+
+	test("the marker pair is no token omp puts on the composer, and never hides the ?", () => {
+		const omp = ["accent", "accent strong", "customMessageLabel strong", "statusLineModel strong", "dim", "typo", "hide"];
+		expect(omp).not.toContain(SPELL_SIGIL_TOKENS);
+		expect(SPELL_SIGIL_TOKENS.split(" ")).not.toContain("hide");
+	});
+
+	test("reduced motion: no shimmer, no pulse; the look stays", () => {
+		const { editor, display, lines } = spellEditor("? find big files", { motion: false });
+		display.casting = true;
+		expect(editor.describeDecorations!(lines)).toEqual([
+			{ from: 0, to: 1, s: "accent mono" },
+			{ from: 2, to: 16, s: "accent" },
+		]);
+	});
+
+	for (const text of ["please orchestrate this", "look at @src/index.ts", "/skill:kata do it", "!ls", "?", "???", "what? no"]) {
+		test(`not a spell, omp's own decorations: ${JSON.stringify(text)}`, () => {
+			const { editor, own, lines } = spellEditor(text);
+			expect(editor.describeDecorations!(lines)).toBe(own);
+			expect(editor.decorateText!(text, { line: 0, startCol: 0, endCol: text.length })).toBe(`own(${text})`);
+		});
+	}
+
+	test("a ? line in a plain terminal: the ? in accent, the description in the keyword hue sweep", () => {
+		const text = "? ab\ncd";
+		const still = spellEditor(text, { motion: false }).editor;
+		// Five description characters ("ab\ncd") over 14 stops of 265°→325°: a 0, b 2, c 8, d 11.
+		expect(still.decorateText!("? ab", { line: 0, startCol: 0, endCol: 4 })).toBe(
+			"<accent>?</accent> <h265>a<h274>b\x1b[39m",
+		);
+		expect(still.decorateText!("cd", { line: 1, startCol: 0, endCol: 2 })).toBe("<h299>c<h312>d\x1b[39m");
+		// With motion the sweep rotates with the clock, as omp's keyword shimmer does: half a period on, c 1, d 4.
+		const moving = spellEditor(text, { now: SHIMMER_PERIOD_MS / 2 }).editor;
+		expect(moving.decorateText!("cd", { line: 1, startCol: 0, endCol: 2 })).toBe("<h269>c<h282>d\x1b[39m");
+	});
+});
+
+describe("casting state", () => {
+	test("the spell line is marked as casting while the model answers, and not once the command lands", async () => {
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		h = harness({ gate });
+		let repaints = 0;
+		h.display.repaint = () => repaints++;
+		h.submit("? list files here");
+		await Promise.resolve();
+		expect(h.display.casting).toBe(true);
+		expect(repaints).toBe(1);
+		release();
+		await h.flush();
+		expect(h.display.casting).toBe(false);
+		expect(h.state.text).toBe("!ls -la");
+	});
+
+	test("an abandoned cast stops casting too", async () => {
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		h = harness({ gate });
+		h.submit("? list files here");
+		await Promise.resolve();
+		h.submit("never mind");
+		release();
+		await h.flush();
+		expect(h.display.casting).toBe(false);
+		expect(h.state.text).toBe("");
 	});
 });
