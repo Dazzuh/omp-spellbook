@@ -6,8 +6,8 @@
   like one of omp's magic keywords; while the model answers, both pulse. Plain terminals get the `?` in accent and a
   purple hue sweep over the description.
 - Spellbook's Tern half, a Tern plugin in `tern/`: a `✦ spellbook` chip where omp's bash chip sits and an accent glow
-  around the composer while a spell is in it, the glow breathing while it casts; the shimmer turns around the
-  theme's accent. Install it with `tern plugin install github.com/Dazzuh/omp-spellbook/tern`.
+  around the composer while a spell is in it, the glow breathing while it casts. Install it with
+  `tern plugin install github.com/Dazzuh/omp-spellbook/tern`.
 - Reduce motion (omp's Motion setting or Tern's Reduce Motion) stops the shimmer and the pulse and leaves the glow
   still.
 

@@ -58,8 +58,8 @@ tern plugin install github.com/Dazzuh/omp-spellbook/tern
 ```
 
 `tern plugin list` then shows `spellbook 0.1.1`; `tern plugin remove spellbook` removes it. Its look is plain CSS
-(`tern/spellbook.css`) shipped as the plugin's manifest styles, so it also reaches remote hosts and Tern's web tab,
-and its colours follow your Tern theme's accent.
+(`tern/spellbook.css`) shipped as the plugin's manifest styles, so it also reaches remote hosts and Tern's web tab.
+The chip and glow take your Tern theme's accent; the words keep omp's magic-keyword rainbow.
 
 Without the plugin, Tern still shows the `?` in accent and the description shimmering like a magic keyword; plain
 terminals show the `?` in accent and a purple hue sweep over the description.

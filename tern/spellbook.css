@@ -46,21 +46,6 @@
 	}
 }
 
-/*
- * The description shimmers like a magic keyword (omp's own `.sf-editor .sf-fx-shimmer` band and
- * motion), its stops turned around the theme accent so the spell follows the theme.
- */
-.sf-col[data-role^='omp.editor'] .sf-editor:has(.sf-t-accent.sf-t-mono) .sf-fx-shimmer {
-	background-image: linear-gradient(
-		90deg,
-		hsl(from var(--spellbook-accent) calc(h - 45) s calc(l + 8)),
-		var(--spellbook-accent),
-		hsl(from var(--spellbook-accent) calc(h + 45) s calc(l + 8)),
-		hsl(from var(--spellbook-accent) h s calc(l + 20)),
-		hsl(from var(--spellbook-accent) calc(h - 45) s calc(l + 8))
-	);
-}
-
 /* The chip: drawn like omp's bash chip (`omp.composer.mode`), in the accent. */
 .sf-col[data-role^='omp.editor'] [data-role='omp.composer.line']:has(> .sf-editor .sf-t-accent.sf-t-mono)::before {
 	content: '✦ spellbook';
