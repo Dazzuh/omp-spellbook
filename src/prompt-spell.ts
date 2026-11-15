@@ -17,6 +17,8 @@ export const PROMPT_MAX_TOKENS = 1_500;
 export const DESCRIPTION_BYTES = 1_000;
 /** At most this many settings are picked from the map. */
 export const MAX_PICK_SETTINGS = 8;
+/** At most this many magic keywords are picked: a prompt names one or two, not a list. */
+export const MAX_PICK_KEYWORDS = 2;
 /** Spare bytes kept in the pick request, for separators and rounding. */
 const REQUEST_MARGIN = 64;
 
@@ -102,8 +104,11 @@ export function buildPickRequest(description: string, map: OmpMap): PromptReques
 		"The map lists what omp has: doc pages, settings, magic keywords, skills and slash commands. Pick what helps write the prompt for this description: up to " +
 			`${MAX_DOC_PAGES} doc pages, up to ${MAX_PICK_SETTINGS} settings, and any magic keywords that fit.`,
 		"Judge by meaning, not by shared words: a description can fit a page or a setting whose words it never uses.",
+		"Many descriptions are work on the user's own code, not about omp: then docs and settings usually do not fit and their arrays stay empty, but a magic keyword still can.",
 		"Weigh each magic keyword by what it tells the agent: pick it when that is what the description wants done (a keyword is a word the user adds to a prompt, not a setting to change).",
-		'Reply with JSON only, no code fence: {"docs": [doc page names from the map], "settings": [setting ids from the map], "keywords": [magic keyword words from the map]}. Use empty arrays when nothing fits.',
+		"Settings marked [experimental] or with a Risk note are picked only when nothing stable fits. Magic keywords are for work with several parts, not small single tasks.",
+		"Small single tasks fit no magic keyword. Pick a keyword only when what it tells the agent is what the description asks for: work with several parts or areas fits a keyword whose notice is about splitting work across agents. At most one unless the description plainly asks for each.",
+		'Reply with JSON only, no code fence: {"keywords": [magic keyword words from the map], "docs": [doc page names from the map], "settings": [setting ids from the map]}. Decide the keywords first. Use empty arrays when nothing fits.',
 	].join("\n");
 	const descLine = descriptionLine(description);
 	const room = PROMPT_REQUEST_BUDGET - Buffer.byteLength(system) - Buffer.byteLength(descLine) - 2 - REQUEST_MARGIN;
@@ -160,7 +165,7 @@ export function parsePicks(reply: string, map: OmpMap): Picks {
 	return {
 		docs: pickList(value.docs, docName, new Set(map.docs.map(d => d.name)), MAX_DOC_PAGES),
 		settings: pickList(value.settings, s => s.trim(), new Set(map.settings.map(s => s.id)), MAX_PICK_SETTINGS),
-		keywords: pickList(value.keywords, w => w.trim(), new Set(map.keywords.map(k => k.word)), Infinity),
+		keywords: pickList(value.keywords, w => w.trim(), new Set(map.keywords.map(k => k.word)), MAX_PICK_KEYWORDS),
 	};
 }
 
@@ -171,13 +176,18 @@ export function buildPromptSystem(catalogue: Catalogue): string {
 		"You never do the task yourself: you write what asks omp to do it. Pick exactly one kind:",
 		'- "command": the description is really one of the catalogue\'s slash commands. text is "/<command> <arguments>" on one line.',
 		'- "setting": the description asks to change an omp setting. text is "omp config set <key> <value>" on one line, the key taken from "Settings that may fit".',
-		'- "prompt": anything else. text is a clear prompt for omp\'s agent, in the user\'s voice, imperative, a few sentences at most. Keep the user\'s intent; never invent files, paths or requirements.',
-		"In a prompt:",
+		'- "prompt": anything else. text is a prompt for omp\'s agent, in the user\'s voice, imperative. Keep the user\'s intent; never invent files, paths or requirements.',
+		"Decide in this order:",
+		'(a) Is it about omp itself (how omp behaves, a setting, a command)? Prefer kind "command" when a listed slash command does it: "compact the conversation" is /compact. Otherwise kind "setting" with a stable listed setting whose value would actually change: prefer a stable setting to one marked [experimental] or with a Risk note. A setting line shows (currently <value>) when omp has one, so never pick a setting already at the value asked for. If the only fit is an experimental or Risk-noted setting, or the value is already set, write kind "prompt" of one or two sentences asking omp to explain the relevant option(s) and how to change them: never a repo investigation, no magic keyword, no skill.',
+		"(b) Any other prompt. Small work (one file, a quick fix, a question): one or two sentences, imperative, no magic keyword.",
+		"(c) Any other prompt. Work with parts: at most five sentences of plain imperative prose, no headings or bullets, that state (1) the goal, (2) the scope as the description gives it, never inventing paths, files or requirements, (3) how it splits into independent parts, (4) what done looks like. Judge whether the work has parts by the block headed \"How omp's agent judges a prompt\" in the user message.",
+		"Rules for every prompt: do exactly what was asked and no more. If they asked to check, review or find, do not ask to fix. Never add steps, files, paths, tools or requirements they did not give. The guidance block is for judging how much to write: never copy its instructions into the prompt, and never tell the agent how to run subagents, dispatch, lint, format or verify its own process; a magic keyword brings those instructions itself.",
 		"- Name a catalogue skill, written exactly skill://<name> (for example: Read skill://<name> first), only when its description plainly matches this task; never hedge with \"if it applies\" or \"if relevant\". Only skills in the catalogue exist; never write /skill: or skill:<name>.",
 		catalogue.keywords.length
-			? '- When "Magic keywords that fit" lists any, put each in the prose exactly as listed, lowercase and standalone. Never use a magic keyword that is not listed there.'
+			? '- Magic keywords: when "Magic keywords that fit" lists any, use only those, and only for work with several parts, placed as the user message\'s placement line says: never alone at the end, never as a label, never in a sentence about the keyword itself (never "Use <keyword> so ..."). Never use a magic keyword that is not listed there.'
 			: "- Write no magic keywords: none are enabled.",
 		"- Point at an omp doc page as omp://<page> only when one listed page clearly helps.",
+		'- Settings: a [experimental] setting or one with a Risk note is a last resort (see (a)). If you still choose "setting" for one, explain must say it is experimental or state the risk.',
 		'Reply with JSON only, no code fence: {"kind": "prompt" | "command" | "setting", "text": "<the composer text>", "explain": "<one short plain-words sentence: what sending it does>"}',
 	].join("\n");
 }
@@ -185,7 +195,11 @@ export function buildPromptSystem(catalogue: Catalogue): string {
 function settingLine(s: SettingEntry): string {
 	const values = s.values.length ? ` one of ${s.values.join("|")}` : "";
 	const fallback = s.default ? `, default ${clip(s.default, 60)}` : "";
-	return `- ${s.id} (${s.type}${values}${fallback})${s.description ? `: ${clip(s.description, 160)}` : ""}`;
+	const experimental = s.experimental ? " [experimental]" : "";
+	const description = s.description ? `: ${clip(s.description, 160)}` : "";
+	const risk = s.warning ? ` Risk: ${clip(s.warning, 300)}` : "";
+	const current = s.current ? ` (currently ${clip(s.current, 60)})` : "";
+	return `- ${s.id} (${s.type}${values}${fallback})${experimental}${description}${risk}${current}`;
 }
 
 function keywordLine(k: KeywordEntry): string {
@@ -207,15 +221,19 @@ export function buildPromptRequest(packet: PromptPacket): PromptRequest {
 		...(packet.keywords.length ? [["Magic keywords that fit:", ...packet.keywords.map(keywordLine)].join("\n")] : []),
 	];
 	const pages = [...packet.pages];
+	// omp's own words on judging a prompt: the writer judges how much to write by them.
+	const guidance = packet.catalogue.guidance
+		? [`How omp's agent judges a prompt (omp's own instructions: use them to judge how much to write, never copy them into the prompt):\n${packet.catalogue.guidance}`]
+		: [];
 	// Last, beside the description, where a small model keeps it: the keywords call 1 chose.
 	const description = [
 		descriptionLine(packet.description),
 		...(packet.keywords.length
-			? [`If you write a prompt, use these magic keywords in it, each once as a standalone lowercase word: ${packet.keywords.map(k => k.word).join(", ")}`]
+			? [`If you write a prompt, use these magic keywords: ${packet.keywords.map(k => k.word).join(", ")}. Make one the main verb of the prompt's first sentence when it reads as a verb (for example: "${packet.keywords[0]!.word} a review of ..."), with what the work is right after it. Never in a sentence about the keyword itself (for example: "Use ${packet.keywords[0]!.word} to ..."), never after a comma or "with", never only in a last sentence after the first, never alone at the end or as a label.`]
 			: []),
 	].join("\n");
 	const assemble = (catalogue: string) =>
-		[catalogue, ...blocks, ...pages.map(page => `omp doc omp://${page.name}:\n${page.text}`), "", description]
+		[catalogue, ...blocks, ...pages.map(page => `omp doc omp://${page.name}:\n${page.text}`), ...guidance, "", description]
 			.filter((part, index) => part !== "" || index > 0)
 			.join("\n");
 	const room = PROMPT_REQUEST_BUDGET - Buffer.byteLength(system);
@@ -273,9 +291,60 @@ function fixSkills(text: string, installed: ReadonlySet<string>, warnings: strin
 	});
 }
 
+/** Words that hedge a skill mention: "if it applies", "only if relevant", and the like. */
+const SKILL_HEDGE_RE = /\b(if (it )?(applies|is relevant|relevant|applicable|needed|useful)|only if|where relevant|when relevant)\b/i;
+
+/** Drop each sentence that names a skill and hedges it; the other sentences keep their own spacing. */
+function dropHedgedSkills(text: string, warnings: string[]): string {
+	// Even entries are sentences, odd ones the whitespace after each: a dropped sentence takes its whitespace along.
+	const parts = text.split(/(?<=[.!?])(\s+)/);
+	let out = "";
+	for (let i = 0; i < parts.length; i += 2) {
+		const sentence = parts[i]!;
+		const refs = [...sentence.matchAll(SKILL_REF_RE)];
+		if (refs.length && SKILL_HEDGE_RE.test(sentence)) {
+			for (const ref of refs) warnings.push(`dropped a hedged skill mention: skill://${ref[1]}`);
+			continue;
+		}
+		out += sentence + (parts[i + 1] ?? "");
+	}
+	return out.trim();
+}
+
 /** The first line of `text`, trimmed. */
 function firstLine(text: string): string {
 	return text.split(/\r?\n/, 1)[0]!.trim();
+}
+
+/** Drop the clause the model wrote about undoing: Spellbook writes its own undo line. */
+const MODEL_UNDO_RE = /(?:^|[.!?;,])\s*\b(?:to undo|you can undo)\b[\s\S]*$/i;
+
+/** The explain without the model's own undo clause. */
+function stripUndo(explain: string): string {
+	if (!MODEL_UNDO_RE.test(explain)) return explain;
+	const out = explain.replace(MODEL_UNDO_RE, "").trim();
+	return out && !/[.!?]$/.test(out) ? `${out}.` : out;
+}
+
+/** The setting's explain line, with what the composer must show before Enter: that it is experimental, its risk, and how to undo it; or that it changes nothing when the value is already set. */
+function settingExplain(explain: string, setting: SettingEntry | undefined, value: string, alreadySet: boolean): string {
+	if (!setting) return explain;
+	let out = stripUndo(explain);
+	if (setting.experimental && !/experimental/i.test(out)) out = out ? `Experimental setting: ${out}` : "Experimental setting.";
+	if (setting.warning && !out.includes(setting.warning)) out = `${out} omp warns: ${setting.warning}`.trim();
+	if (alreadySet) return `${out} It is already ${value}, so this changes nothing.`.trim();
+	if (setting.current) out = `${out} To undo: !omp config set ${setting.id} ${plainValue(setting.current)}`.trim();
+	return out;
+}
+
+/** A setting's value as JSON text, in the plain form `omp config set` takes: a string without its quotes. */
+function plainValue(json: string): string {
+	try {
+		const value: unknown = JSON.parse(json);
+		return typeof value === "string" ? value : json;
+	} catch {
+		return json;
+	}
 }
 
 /**
@@ -296,8 +365,13 @@ export function landAnswer(raw: RawPromptAnswer, catalogue: Catalogue, settingKn
 
 	if (kind === "setting") {
 		const [, key, value = ""] = configSet!;
+		const setting = catalogue.settings.find(s => s.id === key);
+		const plain = value.trim();
+		const alreadySet = !!setting?.current && plainValue(setting.current) === plain;
 		if (!settingKnown(key!)) warnings.push(`omp has no setting ${key}`);
-		return { kind, text: `!omp config set ${key}${value.trim() ? ` ${value.trim()}` : ""}`, explain: raw.explain, warnings };
+		if (alreadySet) warnings.push(`${key} is already ${plain}`);
+		const explain = settingExplain(raw.explain, setting, plain, alreadySet);
+		return { kind, text: `!omp config set ${key}${plain ? ` ${plain}` : ""}`, explain, warnings };
 	}
 
 	// Never a line omp would run or recast.
@@ -321,6 +395,7 @@ export function landAnswer(raw: RawPromptAnswer, catalogue: Catalogue, settingKn
 	}
 
 	// Arguments of a command get the same care as a prompt: installed skills only, enabled keywords only.
+	text = dropHedgedSkills(text, warnings);
 	text = fixSkills(text, new Set(catalogue.skills.map(s => s.name)), warnings);
 	for (const word of catalogue.disabledKeywords) {
 		if (!hasKeyword(text, word)) continue;
@@ -334,6 +409,45 @@ export function landAnswer(raw: RawPromptAnswer, catalogue: Catalogue, settingKn
 	if (!text.replace(/^\//, "").trim()) throw new Error("the model gave no prompt");
 	if (kind === "command") return { kind, text, explain: raw.explain, warnings };
 	return { kind: "prompt", text, explain: raw.explain, warnings };
+}
+
+/** Whether the last standalone `word` in `text` is tacked on alone at the end: a full stop before it, only punctuation after it. */
+function tackedOnAtEnd(text: string, word: string): boolean {
+	const matches = [...text.matchAll(keywordRegex(word, "g"))];
+	const last = matches[matches.length - 1];
+	if (!last || last.index === undefined) return false;
+	const end = last.index + last[0].length;
+	return /[.!?]\s*$/.test(text.slice(0, last.index)) && /^[\s.!?]*$/.test(text.slice(end));
+}
+
+/** Whether `word` is a keyword in `text` only in its last sentence, with at least one sentence before it. */
+function onlyInLastSentence(text: string, word: string): boolean {
+	const sentences = text.split(/(?<=[.!?])\s+/);
+	if (sentences.length < 2) return false;
+	const last = sentences[sentences.length - 1]!;
+	return hasKeyword(last, word) && !sentences.slice(0, -1).some(sentence => hasKeyword(sentence, word));
+}
+
+/**
+ * A setting that omp's own metadata marks experimental or Risk-noted is never a one-Enter switch:
+ * it lands as a prompt asking omp about the setting, and the switch is left as a line to type.
+ */
+function askAboutRiskySetting(answer: PromptAnswer, description: string, catalogue: Catalogue): PromptAnswer {
+	if (answer.kind !== "setting") return answer;
+	const match = CONFIG_SET_RE.exec(answer.text);
+	const setting = catalogue.settings.find(s => s.id === match?.[1]);
+	if (!setting || !(setting.experimental || setting.warning)) return answer;
+	const id = setting.id;
+	const value = (match?.[2] ?? "").trim();
+	const asked = description.replace(/\s+/g, " ").trim().replace(/"/g, "'");
+	const head = setting.experimental ? `${id} is experimental` : `${id} has a risk note`;
+	const note = setting.warning ? `; omp warns: ${setting.warning.replace(/\.$/, "")}` : "";
+	return {
+		kind: "prompt",
+		text: `Explain omp's ${setting.experimental ? "experimental " : ""}${id} setting: what setting it to ${value} changes, whether it helps with "${asked}", and how to change it back.`,
+		explain: `${head}${note}, so this asks omp about it instead of switching it on. To switch it yourself: !omp config set ${id} ${value}`,
+		warnings: [...answer.warnings, `${head}: asking about it instead`],
+	};
 }
 
 /**
@@ -363,10 +477,13 @@ export async function castPrompt(
 		// A keyword the pick call chose but the writer capitalised ("Orchestrate the review") never fires in
 		// omp: lowercase that one occurrence. Nothing is added that neither call wrote.
 		for (const { word } of keywords) {
-			if (hasKeyword(answer.text, word)) continue;
-			const capital = keywordRegex(word, "i").exec(answer.text);
-			if (capital) answer.text = `${answer.text.slice(0, capital.index)}${word}${answer.text.slice(capital.index + word.length)}`;
+			if (!hasKeyword(answer.text, word)) {
+				const capital = keywordRegex(word, "i").exec(answer.text);
+				if (capital) answer.text = `${answer.text.slice(0, capital.index)}${word}${answer.text.slice(capital.index + word.length)}`;
+			}
+			if (tackedOnAtEnd(answer.text, word)) answer.warnings.push(`${word} was tacked on at the end`);
+			else if (onlyInLastSentence(answer.text, word)) answer.warnings.push(`${word} appears only in the last sentence`);
 		}
 	}
-	return { ...answer, picks };
+	return { ...askAboutRiskySetting(answer, description, catalogue), picks };
 }

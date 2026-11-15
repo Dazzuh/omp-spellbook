@@ -10,6 +10,8 @@ import {
 	type CatalogueSources,
 	DESCRIPTION_CHARS,
 	DOC_PAGE_BYTES,
+	readOmpCatalogue,
+	type SettingSource,
 } from "../src/catalogue";
 
 const LONG = `Use when the user asks about ${"multi-step workflows across several repositories ".repeat(20)}`;
@@ -139,6 +141,33 @@ describe("catalogue from fixture sources", () => {
 		expect(throwing.keywordInfo.map(k => k.word)).toEqual(["orchestrate", "ultrathink"]);
 		expect(throwing.keywordInfo.every(k => k.notice === undefined)).toBe(true);
 	});
+
+	test("settings: experimental from id, label or description; risk note and current value", () => {
+		const settings: SettingSource[] = [
+			{ id: "compaction.experimentalContextManagement", type: "boolean" },
+			{ id: "snapcompact.toolResults", type: "boolean", ui: { description: "Experimental: shrink tool output" } },
+			{ id: "autolearn.enabled", type: "boolean", ui: { label: "Auto-Learn (experimental)" } },
+			{ id: "compaction.enabled", type: "boolean", default: true, ui: { label: "Compaction" } },
+			{ id: "externalThinking.x", type: "boolean", ui: { label: "External", warning: "Sends thinking off-machine." } },
+		];
+		const values: Record<string, unknown> = { "compaction.enabled": true, "externalThinking.x": "off" };
+		const catalogue = buildCatalogue(sources({ settings, setting: id => values[id] }));
+		const byId = Object.fromEntries(catalogue.settings.map(s => [s.id, s]));
+		expect(byId["compaction.experimentalContextManagement"]!.experimental).toBe(true);
+		expect(byId["snapcompact.toolResults"]!.experimental).toBe(true);
+		expect(byId["autolearn.enabled"]!.experimental).toBe(true);
+		expect(byId["compaction.enabled"]!.experimental).toBe(false);
+		expect(byId["compaction.enabled"]!.warning).toBe("");
+		expect(byId["compaction.enabled"]!.current).toBe("true");
+		expect(byId["externalThinking.x"]!.warning).toBe("Sends thinking off-machine.");
+		expect(byId["externalThinking.x"]!.current).toBe('"off"');
+		expect(byId["autolearn.enabled"]!.current).toBe("");
+	});
+
+	test("guidance passes through from the sources and defaults to empty", () => {
+		expect(buildCatalogue(sources({ guidance: "Work alone: one edit." })).guidance).toBe("Work alone: one edit.");
+		expect(buildCatalogue(sources()).guidance).toBe("");
+	});
 });
 
 // Stock omp 18.20.2: the devDependency's own CLI, or SPELLBOOK_OMP (e.g. `omp` in CI).
@@ -149,6 +178,13 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-catalogue-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 describe("against stock omp", () => {
+	test("the real reader's guidance carries omp's eager-task and orchestrate texts, without wrapper tags", async () => {
+		const catalogue = await readOmpCatalogue({ getCommands: () => [], getActiveTools: () => ["task", "read"] });
+		expect(catalogue.guidance).toContain("Work alone");
+		expect(catalogue.guidance).toContain("substantial or parallelizable");
+		expect(catalogue.guidance).not.toContain("<system-reminder>");
+	}, 30_000);
+
 	test("the real reader returns skills, built-in commands, keywords from settings and doc pages", () => {
 		// A project skill in the cwd, so the check holds on a machine with no skills installed.
 		const skillDir = path.join(tmp, ".omp", "skills", "catalogue-fixture");

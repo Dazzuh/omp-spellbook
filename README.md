@@ -102,7 +102,11 @@ description to the model, which picks up to three doc pages, up to eight setting
 so you don't need omp's words. A second call writes the prompt from the catalogue, the picked pages' text, settings and
 keywords, and your description. Each call is capped at 128,000 bytes. The answer is checked before it lands: a skill
 you don't have is never named, `/skill:` becomes `skill://`, a keyword you switched off is taken out, and an unknown
-setting is flagged.
+setting is flagged. The writer also gets omp's own guidance on when its agent works alone and when it splits work
+across subagents, so a request with parts is written out with its goal, scope, parts and what done looks like, while a
+small one stays short. A setting omp marks experimental or risky is never one Enter away: you get a prompt asking omp
+to explain it instead, with the `!omp config set` line in the note under it if you want it anyway. Any other setting's
+note says how to undo it, or that it is already set.
 
 For a `?!`/`?!!` command: the description, the working folder, the OS, the shell `!` runs in (plus notes such as which
 tools omp's shell has built in), your SSH host aliases from `~/.ssh/config` (names only), your last few `!` commands in

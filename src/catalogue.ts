@@ -7,6 +7,9 @@
  * fills those sources from the running omp.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** One skill or slash command as the model sees it. */
 export interface CatalogueEntry {
@@ -32,6 +35,8 @@ export interface CatalogueSources {
 	settings?: ReadonlyArray<SettingSource>;
 	/** The session's live tool names: orchestrate's notice renders only when this is given. */
 	noticeContext?: { tools: readonly string[] };
+	/** omp's delegation guidance text (`readOmpCatalogue` builds it); empty when not given. */
+	guidance?: string;
 }
 
 /** One omp setting definition, as the config registry holds it. */
@@ -42,7 +47,7 @@ export interface SettingSource {
 	default?: unknown;
 	/** Credentials are never offered to the model. */
 	credential?: boolean;
-	ui?: { label?: string; description?: string };
+	ui?: { label?: string; description?: string; warning?: string };
 }
 
 /** One omp setting as the model sees it. */
@@ -53,6 +58,12 @@ export interface SettingEntry {
 	/** The default as JSON text, or empty when there is none. */
 	default: string;
 	description: string;
+	/** Whether omp marks the setting experimental: its id, label or description says so. */
+	experimental: boolean;
+	/** omp's risk note (`ui.warning`), or empty. */
+	warning: string;
+	/** The current value as JSON text, or empty when undefined. */
+	current: string;
 }
 
 /** One enabled magic keyword as the model sees it: its trigger, omp's description, and its notice if it takes no context. */
@@ -135,6 +146,8 @@ export class Catalogue {
 		readonly settings: readonly SettingEntry[] = [],
 		/** Enabled magic keywords with omp's own descriptions, in {@link keywords} order. */
 		readonly keywordInfo: readonly KeywordEntry[] = [],
+		/** omp's own delegation guidance: the eager-task template and the orchestrate notice, as plain text. */
+		readonly guidance: string = "",
 	) {}
 
 	/**
@@ -200,6 +213,12 @@ export class Catalogue {
 	}
 }
 
+/** A setting's value as JSON text, or empty when it has none. */
+function valueText(value: unknown): string {
+	if (value === undefined) return "";
+	return JSON.stringify(value) ?? "";
+}
+
 /** The catalogue from injected sources; no omp needed. */
 export function buildCatalogue(sources: CatalogueSources): Catalogue {
 	const describe = (d: string | undefined) => (d ?? "").replace(/\s+/g, " ").trim();
@@ -253,6 +272,12 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 			values: [...(s.values ?? [])],
 			default: s.default === undefined ? "" : JSON.stringify(s.default),
 			description: describe([s.ui?.label, s.ui?.description].filter(Boolean).join(": ")),
+			experimental:
+				/experiment/i.test(s.id) ||
+				/\bexperimental\b/i.test(s.ui?.label ?? "") ||
+				/\bexperimental\b/i.test(s.ui?.description ?? ""),
+			warning: s.ui?.warning ?? "",
+			current: valueText(sources.setting(s.id)),
 		}));
 	return new Catalogue(
 		skills,
@@ -263,7 +288,22 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 		disabledKeywords,
 		settings,
 		keywordInfo,
+		sources.guidance ?? "",
 	);
+}
+
+/** omp's eager-task template, rendered as omp renders it; `undefined` when the file cannot be read (a compiled binary, say). */
+async function readEagerTask(taskBatch: boolean): Promise<string | undefined> {
+	try {
+		const { prompt } = await import("@oh-my-pi/pi-utils");
+		// Package exports map `./*` to source, so the package dir comes from a module it does export. The
+		// import is dynamic so a missing package drops only this part; the reader already loads omp this way.
+		const modes = fileURLToPath(import.meta.resolve("@oh-my-pi/pi-coding-agent/modes/magic-keywords"));
+		const template = await readFile(join(dirname(modes), "..", "prompts", "system", "eager-task.md"), "utf8");
+		return prompt.render(template, { toolRefs: { task: "task" }, taskBatch });
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -273,7 +313,7 @@ export function buildCatalogue(sources: CatalogueSources): Catalogue {
 export async function readOmpCatalogue(
 	pi: Pick<ExtensionAPI, "getCommands"> & Partial<Pick<ExtensionAPI, "getActiveTools">>,
 ): Promise<Catalogue> {
-	const [{ BUILTIN_SLASH_COMMAND_DEFS }, { MAGIC_KEYWORDS }, { getDocFilenames, getEmbeddedDoc }, { lookup, all }, omp] =
+	const [{ BUILTIN_SLASH_COMMAND_DEFS }, { MAGIC_KEYWORDS, renderOrchestrateNotice }, { getDocFilenames, getEmbeddedDoc }, { lookup, all }, omp] =
 		await Promise.all([
 			import("@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry"),
 			import("@oh-my-pi/pi-coding-agent/modes/magic-keywords"),
@@ -288,6 +328,29 @@ export async function readOmpCatalogue(
 	} catch {
 		tools = undefined;
 	}
+	// `task.batch` decides whether the eager-task template offers batched `task` calls; omp's default is on.
+	let taskBatch = true;
+	try {
+		const batch = lookup("task.batch")?.get(omp.settings);
+		if (typeof batch === "boolean") taskBatch = batch;
+	} catch {
+		taskBatch = true;
+	}
+	// Both texts are what omp's agent reads when it decides to work alone or split work, so the writer
+	// gets the same judgement text. Rendered whether or not the orchestrate keyword is on: it is guidance,
+	// not a keyword. Either part is left out when it cannot be read or rendered.
+	let orchestrate: string | undefined;
+	if (tools) {
+		try {
+			orchestrate = renderOrchestrateNotice({ tools });
+		} catch {
+			orchestrate = undefined;
+		}
+	}
+	const guidance = [await readEagerTask(taskBatch), orchestrate]
+		.map(part => (part === undefined ? "" : part.replace(/<\/?[A-Za-z][^<>]*>/g, "").trim()))
+		.filter(part => part !== "")
+		.join("\n\n");
 	return buildCatalogue({
 		builtins: BUILTIN_SLASH_COMMAND_DEFS,
 		commands: pi.getCommands(),
@@ -304,5 +367,6 @@ export async function readOmpCatalogue(
 		readDoc: getEmbeddedDoc,
 		settings: all().map(s => s.definition as SettingSource),
 		...(tools ? { noticeContext: { tools } } : {}),
+		guidance,
 	});
 }

@@ -4,7 +4,7 @@ import { lookup, all } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { getDocFilenames, getEmbeddedDoc } from "@oh-my-pi/pi-coding-agent/internal-urls/docs-index";
 import { MAGIC_KEYWORDS } from "@oh-my-pi/pi-coding-agent/modes/magic-keywords";
 import * as omp from "@oh-my-pi/pi-coding-agent";
-import { buildCatalogue, type CatalogueSources, type SettingSource } from "../src/catalogue";
+import { buildCatalogue, type CatalogueSources, type SettingEntry, type SettingSource } from "../src/catalogue";
 import { buildOmpMap, type DocSummary, docSummary, MAP_SENTENCE_CHARS, type OmpMap, renderMap } from "../src/omp-map";
 
 const decodeStrict = (bytes: Uint8Array): string => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -111,7 +111,9 @@ describe("buildOmpMap from fixture sources", () => {
 
 const sampleMap: OmpMap = {
 	docs: [{ name: "a.md", title: "A title", sentence: "A sentence." }],
-	settings: [{ id: "s.one", type: "enum", values: ["x", "y"], default: "", description: "desc 語😀" }],
+	settings: [
+		{ id: "s.one", type: "enum", values: ["x", "y"], default: "", description: "desc 語😀", experimental: false, warning: "", current: "" },
+	],
 	keywords: [{ word: "ultrathink", description: "Think" }],
 	skills: [{ name: "kata", description: "Kata CLI" }],
 	commands: [{ name: "review", description: "Review" }],
@@ -126,11 +128,24 @@ function hugeMap(settings: number): OmpMap {
 			values: [],
 			default: "",
 			description: "語😀".repeat(60),
+			experimental: false,
+			warning: "",
+			current: "",
 		})),
 	};
 }
 
 describe("renderMap", () => {
+	test("a setting line marks experimental after its type and ends with its risk note", () => {
+		const settings: SettingEntry[] = [
+			{ id: "exp.one", type: "boolean", values: [], default: "false", description: "Pick", experimental: true, warning: "", current: "" },
+			{ id: "risk.two", type: "boolean", values: [], default: "", description: "Risky", experimental: false, warning: "Sends data out.", current: "" },
+		];
+		const text = renderMap({ ...sampleMap, settings }, 1e9);
+		expect(text).toContain("- exp.one (boolean) [experimental]: Pick");
+		expect(text).toContain("- risk.two (boolean): Risky Risk: Sends data out.");
+	});
+
 	test("every section appears with its lines when the budget is huge", () => {
 		const text = renderMap(sampleMap, 1e9);
 		expect(text).toContain("omp doc pages (omp://<name>):\n- a.md: A title. A sentence.");
@@ -232,6 +247,8 @@ describe("against stock omp", () => {
 			expect(compaction).toBeDefined();
 			expect(`${compaction!.title} ${compaction!.sentence}`).toMatch(/context/i);
 			expect(map.settings.some(s => s.id === "tools.approvalMode")).toBe(true);
+			expect(map.settings.find(s => s.id === "compaction.experimentalContextManagement")?.experimental).toBe(true);
+			expect(map.settings.find(s => s.id === "compaction.enabled")?.experimental).toBe(false);
 			const orchestrate = renderMap(map, 1e9).split("\n").find(line => line.startsWith("- orchestrate: "));
 			expect(orchestrate).toContain("It tells the agent:");
 

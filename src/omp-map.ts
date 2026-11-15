@@ -177,7 +177,10 @@ function layout(map: OmpMap, settingChars: number, sentenceChars: number): Line[
 			map.settings.map(s => {
 				const type = s.values.length ? `${s.type} one of ${s.values.join("|")}` : s.type;
 				const description = cutChars(s.description, settingChars);
-				return description ? `- ${s.id} (${type}): ${description}` : `- ${s.id} (${type})`;
+				const tag = s.experimental ? " [experimental]" : "";
+				const head = `- ${s.id} (${type})${tag}`;
+				const risk = s.warning ? ` Risk: ${s.warning}` : "";
+				return `${description ? `${head}: ${description}` : head}${risk}`;
 			}),
 		),
 		...section(

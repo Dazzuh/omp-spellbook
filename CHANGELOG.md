@@ -12,7 +12,10 @@
   eight settings and the keywords that fit the description by meaning; a second call writes the prompt from the
   catalogue and those picks. Each call is capped at 128,000 bytes. Omp's own descriptions decide what a keyword or
   setting means. Spellbook checks the answer before it lands: only installed skills, only enabled keywords, `/skill:`
-  written as `skill://`, settings with their `!`.
+  written as `skill://`, settings with their `!`. The writer also gets omp's own guidance on when its agent works alone
+  or splits work, so a request with parts is written out with its goal, scope, parts and what done looks like, while a
+  small one stays short. A setting omp marks experimental or risky lands as a prompt asking omp to explain it, with
+  the `!omp config set` line in the note; other settings' notes say how to undo them, or that they are already set.
 - **Shell commands moved to `?!`** (`!<command>`) and `?!!` (`!!<command>`); `??` is no longer a spell.
 - Prompt spells you send are saved in the spellbook like commands; Tab on a `?` line offers saved prompts, Tab on a
   `?!`/`?!!` line saved commands. The spellbook file is now version 2 (`entries`, each with a `kind`); a 0.1 file is

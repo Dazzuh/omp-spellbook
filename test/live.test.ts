@@ -143,6 +143,8 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 				description,
 				kind: answer.kind,
 				text: answer.text,
+				explain: answer.explain,
+				warnings: answer.warnings,
 				picks: answer.picks,
 				ms: answer.ms,
 				mapBytes: answer.mapBytes,
@@ -153,6 +155,10 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 			answer.picks?.settings.some(id => id.startsWith("compaction.")) ||
 			/compact/i.test(answer.text);
 		expect(Boolean(reached)).toBe(true);
+		const settingId = /config set (\S+)/.exec(answer.text)?.[1];
+		if (answer.kind === "setting" && settingId?.includes("experimental")) {
+			expect(answer.explain).toMatch(/experimental/i);
+		}
 	}, 240_000);
 
 	test("'get a bunch of helpers to check every file for bugs at once' gets orchestrate", () => {
@@ -163,12 +169,15 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 				description,
 				kind: answer.kind,
 				text: answer.text,
+				explain: answer.explain,
+				warnings: answer.warnings,
 				picks: answer.picks,
 				ms: answer.ms,
 				mapBytes: answer.mapBytes,
 			}),
 		);
 		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
+		expect(answer.text).not.toMatch(/\borchestrate[.!]?\s*$/);
 	}, 240_000);
 
 	test("'make the agent stop asking me before it edits files' reaches tools.approvalMode", () => {
@@ -179,6 +188,8 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 				description,
 				kind: answer.kind,
 				text: answer.text,
+				explain: answer.explain,
+				warnings: answer.warnings,
 				picks: answer.picks,
 				ms: answer.ms,
 				mapBytes: answer.mapBytes,
@@ -189,5 +200,47 @@ describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
 			answer.text.includes("tools.approvalMode") ||
 			/approval/i.test(answer.text);
 		expect(Boolean(reached)).toBe(true);
+	}, 240_000);
+
+	test("'fix the typo in the readme title' stays a short prompt with no keyword", () => {
+		const description = "fix the typo in the readme title";
+		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
+		console.log(
+			JSON.stringify({
+				description,
+				kind: answer.kind,
+				text: answer.text,
+				explain: answer.explain,
+				warnings: answer.warnings,
+				picks: answer.picks,
+				ms: answer.ms,
+				mapBytes: answer.mapBytes,
+			}),
+		);
+		expect(answer.kind).toBe("prompt");
+		expect(answer.text).not.toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
+		expect(answer.text.length).toBeLessThan(300);
+	}, 240_000);
+
+	test("'tidy up this repo, the tests are a mess and the docs are out of date' gets a planned prompt", () => {
+		const description = "tidy up this repo, the tests are a mess and the docs are out of date";
+		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
+		console.log(
+			JSON.stringify({
+				description,
+				kind: answer.kind,
+				text: answer.text,
+				explain: answer.explain,
+				warnings: answer.warnings,
+				picks: answer.picks,
+				ms: answer.ms,
+				mapBytes: answer.mapBytes,
+			}),
+		);
+		expect(answer.kind).toBe("prompt");
+		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
+		expect(answer.text).toMatch(/test/i);
+		expect(answer.text).toMatch(/doc/i);
+		expect(answer.text).not.toMatch(/\borchestrate[.!]?\s*$/);
 	}, 240_000);
 });

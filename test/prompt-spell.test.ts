@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { buildCatalogue, type Catalogue, type CatalogueSources, DOC_PAGE_BYTES, MAX_DOC_PAGES, type SettingEntry } from "../src/catalogue";
+import { buildCatalogue, Catalogue, type CatalogueSources, DOC_PAGE_BYTES, MAX_DOC_PAGES, type SettingEntry } from "../src/catalogue";
 import type { OmpMap } from "../src/omp-map";
 import {
+	buildPickRequest,
 	buildPromptRequest,
 	castPrompt,
 	hasKeyword,
+	landAnswer,
+	MAX_PICK_KEYWORDS,
 	MAX_PICK_SETTINGS,
 	parsePicks,
 	PROMPT_REQUEST_BUDGET,
@@ -67,6 +70,22 @@ function catalogue(options: { off?: string[]; overrides?: Partial<CatalogueSourc
 		],
 		...options.overrides,
 	});
+}
+
+/** The fixture catalogue with omp's guidance text, and its settings, replaced. */
+function withFixture(options: { guidance?: string; settings?: SettingEntry[] } = {}): Catalogue {
+	const base = catalogue();
+	return new Catalogue(
+		base.skills,
+		base.commands,
+		base.keywords,
+		base.docs,
+		async name => DOCS[name],
+		base.disabledKeywords,
+		options.settings ?? base.settings,
+		base.keywordInfo,
+		options.guidance ?? "",
+	);
 }
 
 /** omp's map as the fixture catalogue sees it: page summaries, settings, enabled keywords, skills and commands. */
@@ -157,6 +176,18 @@ describe("skills are named as skill://<name>, installed ones only", () => {
 		expect(answer.text).toBe("/compact nope and");
 		expect(answer.warnings).toEqual(["skill nope is not installed", "orchestrate is switched off"]);
 	});
+
+	test("a sentence that names a skill and hedges it is dropped with a warning; the other sentences stay", async () => {
+		const { answer } = await cast("file the flaky test", {
+			kind: "prompt",
+			text: "Read skill://kata first. Read skill://tarkov-wiki only if relevant. Then file the issue.",
+		});
+		expect(answer).toMatchObject({
+			kind: "prompt",
+			text: "Read skill://kata first. Then file the issue.",
+			warnings: ["dropped a hedged skill mention: skill://tarkov-wiki"],
+		});
+	});
 });
 
 describe("magic keywords come from the first call's picks", () => {
@@ -192,7 +223,7 @@ describe("magic keywords come from the first call's picks", () => {
 			catalogue(),
 			pickReply,
 		);
-		expect(request.user.endsWith("as a standalone lowercase word: orchestrate")).toBe(true);
+		expect(request.user).toContain('(for example: "orchestrate a review of ...")');
 		expect(answer.text).toBe("orchestrate the review: split the repo, then report.");
 		// Unpicked, the same capitalised word is left alone.
 		const unpicked = await cast("review this repo", { kind: "prompt", text: "Orchestrate the review." });
@@ -241,6 +272,12 @@ describe("magic keywords come from the first call's picks", () => {
 		for (const text of ["Orchestrate this", "orchestrate()", "src/orchestrate", "orchestrate.ts", "my-orchestrate"]) {
 			expect(hasKeyword(text, "orchestrate")).toBe(false);
 		}
+	});
+
+	test("the first call's system prompt says small tasks fit no keyword, and at most one unless each is asked for", () => {
+		const { system } = buildPickRequest("review this", ompMap());
+		expect(system).toContain("Small single tasks fit no magic keyword.");
+		expect(system).toContain("At most one unless the description plainly asks for each.");
 	});
 });
 
@@ -393,6 +430,9 @@ describe("the two calls: the map, then the picks", () => {
 			values: [],
 			default: "",
 			description: `Tunes part ${i} of the thing. `.repeat(12),
+			experimental: false,
+			warning: "",
+			current: "",
 		}));
 		const cat = catalogue();
 		const picks = JSON.stringify({ settings: big.slice(0, MAX_PICK_SETTINGS).map(s => s.id), docs: ["settings.md", "compaction.md"] });
@@ -440,6 +480,9 @@ describe("parsing the first reply", () => {
 		values: [],
 		default: "",
 		description: "",
+		experimental: false,
+		warning: "",
+		current: "",
 	}));
 	const map = ompMap(cat, { settings: [...cat.settings, ...extra] });
 
@@ -474,6 +517,15 @@ describe("parsing the first reply", () => {
 		expect(parsePicks('Sure: {"docs":["settings"]} done', map).docs).toEqual(["settings.md"]);
 		expect(parsePicks("no json here", map)).toEqual({ docs: [], settings: [], keywords: [] });
 	});
+
+	test("at most MAX_PICK_KEYWORDS keywords are picked, in the order the first call gave them", () => {
+		expect(MAX_PICK_KEYWORDS).toBe(2);
+		expect(map.keywords.map(k => k.word)).toEqual(expect.arrayContaining(["ultrathink", "orchestrate", "jevify"]));
+		expect(parsePicks(JSON.stringify({ keywords: ["ultrathink", "orchestrate", "jevify"] }), map).keywords).toEqual([
+			"ultrathink",
+			"orchestrate",
+		]);
+	});
 });
 
 describe("parsing the reply", () => {
@@ -487,5 +539,307 @@ describe("parsing the reply", () => {
 		expect(parsePromptReply("Review the repo.")).toEqual({ kind: undefined, text: "Review the repo.", explain: "" });
 		expect(parsePromptReply("")).toBeUndefined();
 		expect(parsePromptReply('{"kind":"prompt"}')).toBeUndefined();
+	});
+});
+
+describe("the writer gets omp's guidance, and the keyword and setting rules", () => {
+	const GUIDANCE = "A task with parts that do not depend on each other can be split across agents; one small change is done alone.";
+	const EXPERIMENTAL: SettingEntry = {
+		id: "compaction.experimentalContextManagement",
+		type: "boolean",
+		values: [],
+		default: "false",
+		description: "Notes-backed context windows (experimental)",
+		experimental: true,
+		warning: "",
+		current: "true",
+	};
+	const RISKY: SettingEntry = {
+		id: "thinking.external",
+		type: "boolean",
+		values: [],
+		default: "false",
+		description: "Send thinking outside omp",
+		experimental: false,
+		warning: "Thinking text leaves this machine.",
+		current: "",
+	};
+	const STRATEGY: SettingEntry = {
+		id: "compaction.strategy",
+		type: "enum",
+		values: ["summary", "drop"],
+		default: '"summary"',
+		description: "How to compact",
+		experimental: false,
+		warning: "",
+		current: '"drop"',
+	};
+	const STABLE: SettingEntry = {
+		id: "tui.motion",
+		type: "boolean",
+		values: [],
+		default: "true",
+		description: "Animate the interface",
+		experimental: false,
+		warning: "",
+		current: "",
+	};
+
+	/** The explain line `landAnswer` gives a `setting` answer naming `setting` at `value`, given the model's `explain`. */
+	async function explainFor(setting: SettingEntry, explain: string, value = "true"): Promise<string> {
+		const cat = withFixture({ settings: [setting] });
+		return landAnswer({ kind: "setting", text: `omp config set ${setting.id} ${value}`, explain }, cat, () => true).explain;
+	}
+
+	test("the write call carries omp's guidance before the description, and only when there is some", async () => {
+		const header = "How omp's agent judges a prompt (omp's own instructions: use them to judge how much to write, never copy them into the prompt):";
+		const { request } = await cast("review every file for bugs at once", { kind: "prompt", text: "Review." }, withFixture({ guidance: GUIDANCE }));
+		expect(request.user).toContain(`${header}\n${GUIDANCE}`);
+		expect(request.user.indexOf(header)).toBeLessThan(request.user.indexOf("Description: review every file"));
+		const plain = await cast("review every file for bugs at once", { kind: "prompt", text: "Review." });
+		expect(plain.request.user).not.toContain("How omp's agent judges a prompt");
+	});
+
+	test("the guidance survives the cap: pages and catalogue give way first", () => {
+		const huge = new Catalogue(
+			Array.from({ length: 400 }, (_, i) => ({ name: `skill-${i}`, description: "A long skill description. ".repeat(40) })),
+			[],
+			[],
+			[],
+			async name => DOCS[name],
+			[],
+			[],
+			[],
+			GUIDANCE,
+		);
+		const request = buildPromptRequest({
+			description: "d ".repeat(5_000),
+			catalogue: huge,
+			pages: [{ name: "settings.md", text: "s".repeat(DOC_PAGE_BYTES) }],
+			settings: [],
+			keywords: [],
+		});
+		expect(Buffer.byteLength(request.system) + Buffer.byteLength(request.user)).toBeLessThanOrEqual(PROMPT_REQUEST_BUDGET);
+		expect(request.user).toContain(GUIDANCE);
+		expect(request.user).toContain("Description: d d");
+		expect(request.user).toContain("skill-0");
+	});
+
+	test("the write call's system prompt gives the two shapes of prompt and the small-work rule", async () => {
+		const { request } = await cast("review every file", { kind: "prompt", text: "Review." }, withFixture({ guidance: GUIDANCE }));
+		for (const part of ["(1) the goal", "(2) the scope", "(3) how it splits", "(4) what done looks like"]) {
+			expect(request.system).toContain(part);
+		}
+		expect(request.system).toContain("Small work (one file, a quick fix, a question): one or two sentences");
+		expect(request.system).toContain("never inventing paths, files or requirements");
+		expect(request.system).toContain("How omp's agent judges a prompt");
+	});
+
+	test("keywords are placed inside a sentence: the system prompt says so and the old appended line is gone", async () => {
+		const { request } = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Review." },
+			catalogue(),
+			JSON.stringify({ keywords: ["orchestrate"] }),
+		);
+		expect(request.system).toContain("never alone at the end, never as a label");
+		expect(request.user).not.toContain("use these magic keywords in it");
+		expect(request.user).toContain("never alone at the end or as a label.");
+		expect(request.user).toContain('(for example: "Use orchestrate to ...")');
+	});
+
+	test("settings marked experimental or with a risk show their markers and current value to the writer", async () => {
+		const cat = withFixture({ settings: [EXPERIMENTAL, RISKY] });
+		const { pick, request } = await cast(
+			"keep notes across long chats",
+			{ kind: "prompt", text: "Explain the notes option." },
+			cat,
+			JSON.stringify({ settings: [EXPERIMENTAL.id, RISKY.id] }),
+		);
+		expect(request.user).toContain(
+			"- compaction.experimentalContextManagement (boolean, default false) [experimental]: Notes-backed context windows (experimental) (currently true)",
+		);
+		expect(request.user).toContain(
+			"- thinking.external (boolean, default false): Send thinking outside omp Risk: Thinking text leaves this machine.",
+		);
+		expect(request.system).toContain("prefer a stable setting");
+		expect(request.system).toContain("explain must say it is experimental or state the risk");
+		expect(pick.system).toContain("picked only when nothing stable fits");
+	});
+
+	test("an experimental setting's explain says so once, and says how to undo it", async () => {
+		expect(await explainFor(EXPERIMENTAL, "Turns notes off.", "false")).toBe(
+			"Experimental setting: Turns notes off. To undo: !omp config set compaction.experimentalContextManagement true",
+		);
+		expect(await explainFor(EXPERIMENTAL, "Turns the experimental notes off.", "false")).toBe(
+			"Turns the experimental notes off. To undo: !omp config set compaction.experimentalContextManagement true",
+		);
+	});
+
+	test("a risk note is appended to the explain unless it is already there", async () => {
+		expect(await explainFor(RISKY, "Turns it on.")).toBe("Turns it on. omp warns: Thinking text leaves this machine.");
+		expect(await explainFor(RISKY, "Turns it on. omp warns: Thinking text leaves this machine.")).toBe(
+			"Turns it on. omp warns: Thinking text leaves this machine.",
+		);
+	});
+
+	test("a setting with a current value says how to undo it, the value as plain text", async () => {
+		expect(await explainFor(STRATEGY, "Compacts by summary.")).toBe(
+			"Compacts by summary. To undo: !omp config set compaction.strategy drop",
+		);
+	});
+
+	test("a stable setting with no current value gets nothing added to its explain", async () => {
+		expect(await explainFor(STABLE, "Turns animations off.")).toBe("Turns animations off.");
+	});
+
+	test("the write call's system prompt has the decision order, the compact rule, and the do-no-more and never-copy rules", async () => {
+		const { request } = await cast("compact the conversation", { kind: "command", text: "compact" });
+		for (const part of [
+			"Decide in this order:",
+			'"compact the conversation" is /compact',
+			"prefer a stable setting",
+			"do exactly what was asked and no more",
+			"do not ask to fix",
+			"never copy its instructions into the prompt",
+		]) {
+			expect(request.system).toContain(part);
+		}
+	});
+
+	test("a setting already at the asked value warns, says it changes nothing, and gets no undo line", async () => {
+		const APPROVAL: SettingEntry = {
+			id: "tools.approvalMode",
+			type: "enum",
+			values: ["always-ask", "write", "yolo"],
+			default: '"always-ask"',
+			description: "When to ask before a tool runs",
+			experimental: false,
+			warning: "",
+			current: '"yolo"',
+		};
+		const { answer } = await cast(
+			"make the agent stop asking me before it edits files",
+			{
+				kind: "setting",
+				text: "omp config set tools.approvalMode yolo",
+				explain: "Keeps yolo mode. To undo: !omp config set tools.approvalMode yolo",
+			},
+			withFixture({ settings: [APPROVAL] }),
+		);
+		expect(answer).toMatchObject({
+			kind: "setting",
+			text: "!omp config set tools.approvalMode yolo",
+			explain: "Keeps yolo mode. It is already yolo, so this changes nothing.",
+			warnings: ["tools.approvalMode is already yolo"],
+		});
+	});
+
+	test("the model's own undo clause is stripped, and Spellbook's undo line is appended once", async () => {
+		expect(await explainFor(STRATEGY, "Compacts by summary. To undo: !omp config set compaction.strategy summary")).toBe(
+			"Compacts by summary. To undo: !omp config set compaction.strategy drop",
+		);
+		expect(await explainFor(STRATEGY, "Turns it back; to undo later, set compaction.strategy to summary.")).toBe(
+			"Turns it back. To undo: !omp config set compaction.strategy drop",
+		);
+		expect(await explainFor(STRATEGY, "Adds a key to undo the last edit.")).toBe(
+			"Adds a key to undo the last edit. To undo: !omp config set compaction.strategy drop",
+		);
+	});
+
+	test("a picked keyword tacked on alone at the end is kept and warned about; one placed in a sentence is not", async () => {
+		const pick = JSON.stringify({ keywords: ["orchestrate"] });
+		const tacked = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Review this repo. orchestrate." },
+			catalogue(),
+			pick,
+		);
+		expect(tacked.answer.text).toBe("Review this repo. orchestrate.");
+		expect(tacked.answer.warnings).toEqual(["orchestrate was tacked on at the end"]);
+		const inside = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Review this repo, then orchestrate the fixes." },
+			catalogue(),
+			pick,
+		);
+		expect(inside.answer.warnings).toEqual([]);
+	});
+
+	test("an experimental setting the write call picks lands as a prompt asking omp about it, never as a switch", async () => {
+		const { answer } = await cast(
+			"stop it forgetting stuff in long chats",
+			{ kind: "setting", text: "omp config set compaction.experimentalContextManagement false", explain: "Turns notes off." },
+			withFixture({ settings: [EXPERIMENTAL] }),
+			JSON.stringify({ settings: [EXPERIMENTAL.id] }),
+		);
+		expect(answer).toEqual({
+			kind: "prompt",
+			text: `Explain omp's experimental compaction.experimentalContextManagement setting: what setting it to false changes, whether it helps with "stop it forgetting stuff in long chats", and how to change it back.`,
+			explain:
+				"compaction.experimentalContextManagement is experimental, so this asks omp about it instead of switching it on. To switch it yourself: !omp config set compaction.experimentalContextManagement false",
+			warnings: ["compaction.experimentalContextManagement is experimental: asking about it instead"],
+			picks: { docs: [], settings: [EXPERIMENTAL.id], keywords: [] },
+		});
+	});
+
+	test("a Risk-noted setting re-lands the same way, with risk wording and the description's quotes made single", async () => {
+		const { answer } = await cast(
+			'send "my" thinking elsewhere',
+			{ kind: "setting", text: "omp config set thinking.external true", explain: "Turns it on." },
+			withFixture({ settings: [RISKY] }),
+			JSON.stringify({ settings: [RISKY.id] }),
+		);
+		expect(answer).toEqual({
+			kind: "prompt",
+			text: `Explain omp's thinking.external setting: what setting it to true changes, whether it helps with "send 'my' thinking elsewhere", and how to change it back.`,
+			explain:
+				"thinking.external has a risk note; omp warns: Thinking text leaves this machine, so this asks omp about it instead of switching it on. To switch it yourself: !omp config set thinking.external true",
+			warnings: ["thinking.external has a risk note: asking about it instead"],
+			picks: { docs: [], settings: [RISKY.id], keywords: [] },
+		});
+	});
+
+	test("a stable setting is not re-landed: it stays the one-Enter config line", async () => {
+		const { answer } = await cast(
+			"stop the animations",
+			{ kind: "setting", text: "omp config set tui.motion false" },
+			withFixture({ settings: [STABLE] }),
+			JSON.stringify({ settings: [STABLE.id] }),
+		);
+		expect(answer).toMatchObject({ kind: "setting", text: "!omp config set tui.motion false", warnings: [] });
+	});
+
+	test("the placement line makes the picked keyword the main verb of the first sentence, and says what to avoid", async () => {
+		const { request } = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Review." },
+			catalogue(),
+			JSON.stringify({ keywords: ["orchestrate"] }),
+		);
+		expect(request.user).toContain(
+			`Make one the main verb of the prompt's first sentence when it reads as a verb (for example: "orchestrate a review of ...")`,
+		);
+		expect(request.user).toContain('(for example: "Use orchestrate to ...")');
+		expect(request.user).toContain("never only in a last sentence after the first");
+	});
+
+	test("a picked keyword only in a last sentence after the first is warned about; one in the first sentence is not", async () => {
+		const pick = JSON.stringify({ keywords: ["orchestrate"] });
+		const late = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Review the repo. Then orchestrate the fixes." },
+			catalogue(),
+			pick,
+		);
+		expect(late.answer.warnings).toEqual(["orchestrate appears only in the last sentence"]);
+		const early = await cast(
+			"get a few agents to review this repo",
+			{ kind: "prompt", text: "Orchestrate the review. Then report the fixes." },
+			catalogue(),
+			pick,
+		);
+		expect(early.answer.text).toBe("orchestrate the review. Then report the fixes.");
+		expect(early.answer.warnings).toEqual([]);
 	});
 });
