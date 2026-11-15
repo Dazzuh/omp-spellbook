@@ -48,11 +48,15 @@ function castLine(lines: string[], cursorLine: number): string | undefined {
 	return castQuery(text) ? text : undefined;
 }
 
+/** Providers this module already wrapped, so a factory re-added on session_start doesn't stack. */
+const wrapped = new WeakSet<object>();
+
 /**
  * Wrap omp's autocomplete provider: Tab on a `?` line lists saved spells matching the words typed so
  * far; picking one hands it to `onPick` with no model call. Anything else goes to `current`.
  */
 export function wrapAutocomplete<P extends CompletionProvider>(current: P, deps: SpellCompletionDeps): P {
+	if (wrapped.has(current)) return current;
 	let shown = new Map<string, SpellPick>();
 	const overrides: Partial<CompletionProvider> = {
 		async getForceFileSuggestions(lines, cursorLine, cursorCol, signal) {
@@ -84,11 +88,13 @@ export function wrapAutocomplete<P extends CompletionProvider>(current: P, deps:
 			return { lines, cursorLine, cursorCol, onApplied: () => deps.onPick(pick) };
 		},
 	};
-	return new Proxy(current, {
+	const proxy = new Proxy(current, {
 		get(target, prop, receiver) {
 			if (Object.hasOwn(overrides, prop)) return overrides[prop as keyof CompletionProvider];
 			const value = Reflect.get(target, prop, receiver);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
+	wrapped.add(proxy);
+	return proxy;
 }

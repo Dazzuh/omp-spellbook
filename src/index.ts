@@ -125,6 +125,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 		live = ctx;
 		if (!ctx.hasUI) return;
 		for (const problem of current.problems) ctx.ui.notify(`Spellbook settings: ${problem}`, "warning");
+		// Re-added on every session_start (/new, resume); wrapAutocomplete skips a provider it already wrapped.
 		ctx.ui.addAutocompleteProvider(provider =>
 			wrapAutocomplete(provider, {
 				find: query => book.find(query),

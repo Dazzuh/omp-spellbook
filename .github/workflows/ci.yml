@@ -16,12 +16,12 @@ jobs:
     env:
       OMP_VERSION: 18.20.2
       MODEL: anthropic/claude-haiku-5-5
-      # Optional repository secret: without it the live model step is skipped.
       # Git Bash on Windows would rewrite "/spellbook" into a Windows path.
       MSYS_NO_PATHCONV: "1"
+      # Optional repository secret: without it the live model step is skipped.
       LIVE_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
