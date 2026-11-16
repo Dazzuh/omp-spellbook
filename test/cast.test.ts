@@ -182,14 +182,15 @@ describe("runHelper", () => {
 		signal,
 	});
 
-	test("sends the description as the user message and returns the last assistant text; the session is disposed", async () => {
+	test("sends the description as the user message and returns the last assistant text and the lookups; the session is disposed", async () => {
 		const { sdk, seen } = fakeSdk([
 			{ role: "user", content: [{ type: "text", text: "list files here" }] },
-			{ role: "assistant", content: [{ type: "toolCall" }], stopReason: "toolUse" },
+			{ role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: "omp://" } }], stopReason: "toolUse" },
 			{ role: "toolResult", content: [{ type: "text", text: "README.md" }] },
+			{ role: "assistant", content: [{ type: "toolCall", name: "grep", arguments: { pattern: "flaky" } }], stopReason: "toolUse" },
 			{ role: "assistant", content: [{ type: "thinking", thinking: "hm" }, { type: "text", text: '{"text":"ls"}' }] },
 		]);
-		expect(await runHelper(request(), sdk)).toBe('{"text":"ls"}');
+		expect(await runHelper(request(), sdk)).toEqual({ reply: '{"text":"ls"}', lookups: ["read omp://", "grep flaky"] });
 		expect(seen.prompts).toEqual(["list files here"]);
 		expect(seen.disposed).toBe(true);
 	});

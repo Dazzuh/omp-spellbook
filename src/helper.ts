@@ -84,8 +84,22 @@ export function lastReply(messages: ReadonlyArray<unknown>): string {
 	throw new Error("the model gave no reply");
 }
 
-/** Run one cast and return the model's final reply text. */
-export async function runHelper(request: HelperRequest, sdk: HelperSdk): Promise<string> {
+/** What the model looked up during a cast, in order: each tool call as `<tool> <path or pattern>`. */
+export function lookups(messages: ReadonlyArray<unknown>): string[] {
+	const calls: string[] = [];
+	for (const message of messages as ReadonlyArray<{ role?: string; content?: unknown }>) {
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const block of message.content as ReadonlyArray<{ type?: string; name?: string; arguments?: Record<string, unknown> }>) {
+			if (block.type !== "toolCall") continue;
+			const target = block.arguments?.path ?? block.arguments?.pattern ?? JSON.stringify(block.arguments ?? {});
+			calls.push(`${block.name} ${String(target)}`);
+		}
+	}
+	return calls;
+}
+
+/** Run one cast: the model's final reply text and what it looked up on the way. */
+export async function runHelper(request: HelperRequest, sdk: HelperSdk): Promise<{ reply: string; lookups: string[] }> {
 	request.signal.throwIfAborted();
 	const { session } = await sdk.createAgentSession(helperOptions(request, sdk));
 	const onAbort = () => void session.abort();
@@ -93,7 +107,7 @@ export async function runHelper(request: HelperRequest, sdk: HelperSdk): Promise
 	try {
 		await session.prompt(request.description, { expandPromptTemplates: false });
 		request.signal.throwIfAborted();
-		return lastReply(session.messages);
+		return { reply: lastReply(session.messages), lookups: lookups(session.messages) };
 	} finally {
 		request.signal.removeEventListener("abort", onAbort);
 		await session.dispose();

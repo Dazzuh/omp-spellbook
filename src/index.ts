@@ -107,11 +107,15 @@ export default function spellbook(pi: ExtensionAPI): void {
 	/** Where the cast model can look things up: this session's log and the project. */
 	const places = (ctx: ExtensionContext): LookupPlaces => ({ sessionLog: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd });
 	/** One cast: a read-only helper session on the cast model answers `description` under `system`. */
-	const cast = async (system: string, description: string, signal: AbortSignal): Promise<{ reply: string; model: string }> => {
+	const cast = async (
+		system: string,
+		description: string,
+		signal: AbortSignal,
+	): Promise<{ reply: string; model: string; lookups: string[] }> => {
 		const ctx = ctxNow();
 		const picked = castModel(ctx);
 		if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
-		const reply = await runHelper(
+		const { reply, lookups } = await runHelper(
 			{
 				cwd: ctx.cwd,
 				model: picked.model,
@@ -124,7 +128,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 			},
 			SDK,
 		);
-		return { reply, model: `${picked.model.provider}/${picked.model.id}` };
+		return { reply, model: `${picked.model.provider}/${picked.model.id}`, lookups };
 	};
 
 	const book = new Spellbook({
@@ -140,16 +144,20 @@ export default function spellbook(pi: ExtensionAPI): void {
 		bookFile: () => resolveBookPath(location, current.settings.bookPath),
 		reduceMotion,
 		ask: async (description, signal) => {
-			const { reply, model } = await cast(shellSystemPrompt(places(ctxNow()), currentShell(), describeOs()), description, signal);
+			const { reply, model, lookups } = await cast(
+				shellSystemPrompt(places(ctxNow()), currentShell(), describeOs()),
+				description,
+				signal,
+			);
 			const answer = parseShellReply(reply);
 			if (!answer) throw new Error(`${model} gave no command: ${reply}`);
-			return { answer, model };
+			return { answer, model, lookups };
 		},
 		askPrompt: async (description, signal) => {
-			const { reply, model } = await cast(promptSystemPrompt(places(ctxNow())), description, signal);
+			const { reply, model, lookups } = await cast(promptSystemPrompt(places(ctxNow())), description, signal);
 			const answer = parsePromptReply(reply);
 			if (!answer) throw new Error(`${model} gave no prompt: ${reply}`);
-			return { answer, model };
+			return { answer, model, lookups };
 		},
 		setTimeout: (fn, ms) => ctxNow().setTimeout(fn, ms),
 		clearTimeout: handle => live?.clearTimer(handle as never),
@@ -250,7 +258,9 @@ export default function spellbook(pi: ExtensionAPI): void {
 							? await book.deps.ask(request.description, signal)
 							: await book.deps.askPrompt(request.description, signal);
 					const ms = Date.now() - started;
-					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model, ms })}\n`);
+					process.stdout.write(
+						`${JSON.stringify({ ...result.answer, model: result.model, ms, lookups: result.lookups ?? [] })}\n`,
+					);
 					return;
 				}
 				default: {

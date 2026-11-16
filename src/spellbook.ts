@@ -34,10 +34,10 @@ export interface SpellbookDeps {
 	bookFile(): string;
 	/** Whether motion is off (omp `tui.motion` or Tern's Reduce Motion). */
 	reduceMotion(): boolean;
-	/** Ask the model for a command; resolves with its answer and the model's name. */
-	ask(description: string, signal: AbortSignal): Promise<{ answer: CastAnswer; model: string }>;
-	/** Ask the model for a prompt for omp's agent; resolves with its answer and the model's name. */
-	askPrompt(description: string, signal: AbortSignal): Promise<{ answer: PromptAnswer; model: string }>;
+	/** Ask the model for a command; resolves with its answer, the model's name and what it looked up. */
+	ask(description: string, signal: AbortSignal): Promise<{ answer: CastAnswer; model: string; lookups?: string[] }>;
+	/** Ask the model for a prompt for omp's agent; resolves with its answer, the model's name and what it looked up. */
+	askPrompt(description: string, signal: AbortSignal): Promise<{ answer: PromptAnswer; model: string; lookups?: string[] }>;
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 	paint(color: string, text: string): string;
