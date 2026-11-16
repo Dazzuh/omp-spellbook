@@ -99,14 +99,18 @@ export function castUsage(messages: ReadonlyArray<unknown>): CastUsage {
 	return total;
 }
 
-/** What the model looked up during a cast, in order: each tool call as `<tool> <path or pattern>`. */
+/** What the model looked up during a cast, in order: each tool call as `<tool> <path>`, `<tool> <pattern>` or `<tool> <pattern> in <path>`. */
 export function lookups(messages: ReadonlyArray<unknown>): string[] {
 	const calls: string[] = [];
 	for (const message of messages as ReadonlyArray<{ role?: string; content?: unknown }>) {
 		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
 		for (const block of message.content as ReadonlyArray<{ type?: string; name?: string; arguments?: Record<string, unknown> }>) {
 			if (block.type !== "toolCall") continue;
-			const target = block.arguments?.path ?? block.arguments?.pattern ?? JSON.stringify(block.arguments ?? {});
+			const { path, pattern } = block.arguments ?? {};
+			const target =
+				path !== undefined && pattern !== undefined
+					? `${String(pattern)} in ${String(path)}`
+					: (path ?? pattern ?? JSON.stringify(block.arguments ?? {}));
 			calls.push(`${block.name} ${String(target)}`);
 		}
 	}

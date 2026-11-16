@@ -221,8 +221,9 @@ function spellText(spell: Spell): string {
 /**
  * Spells of `kind` (commands by default) matching `query`, best first, ranked by omp's fuzzy matcher
  * (`fuzzyRank`): every query word must match, in any order, as a whole word, a prefix or letters in order.
- * Tiers, best first: the query in the spell's words; in its words and command or prompt together; the
- * same two with one typo forgiven ({@link typoQueries}). Within a tier, omp's score, then most uses, then
+ * Tiers, best first: the query in the spell's words; the same with one typo forgiven ({@link typoQueries});
+ * the query in its words and command or prompt together; that with one typo. So any match in the words
+ * beats a match that needs the text. Within a tier, omp's score, then most uses, then
  * most recently used. An empty query lists the most used spells of that kind. The Tab menu and the
  * `/spellbook` panel both call this.
  */
@@ -241,11 +242,12 @@ export function findSpells<K extends SpellKind = "command">(
 	if (!query.trim()) {
 		for (const spell of pool) record(spell, 0);
 	} else {
-		const passes: [string, number][] = [[query, 0], ...typoQueries(query).map((typo): [string, number] => [typo, 2])];
-		for (const [q, tier] of passes) {
+		const passes: [string, boolean][] = [[query, false], ...typoQueries(query).map((typo): [string, boolean] => [typo, true])];
+		for (const [q, typo] of passes) {
+			const tier = typo ? 1 : 0;
 			for (const { item, score } of fuzzyRank(pool, q, spell => spell.words)) record(item, tier * TIER + Math.round(score));
 			for (const { item, score } of fuzzyRank(pool, q, spell => `${spell.words} ${spellText(spell)}`)) {
-				record(item, (tier + 1) * TIER + Math.round(score));
+				record(item, (tier + 2) * TIER + Math.round(score));
 			}
 		}
 	}

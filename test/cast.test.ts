@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { getModelMatchPreferences, resolveCliModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { getActiveSkills, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { CAST_ENTRY, castsDir, OUTCOME_ENTRY, recentCasts, SUPERSEDED, summarizeCast } from "../src/castlog";
 import {
 	CAST_TOOLS,
@@ -139,6 +140,7 @@ describe("the cast model is the model setting, resolved as omp resolves prewalk 
 				"sessionManager",
 				"settings",
 				"systemPrompt",
+				"taskDepth",
 				"thinkingLevel",
 				"skills",
 				"toolNames",
@@ -175,6 +177,8 @@ describe("the cast session in stock omp", () => {
 			SessionManager.inMemory(project),
 			REAL_SDK,
 		);
+		// The user's session owns omp's agent lifecycle (its adopted and parked subagents).
+		const lifecycle = AgentLifecycleManager.global();
 		const { session } = await createAgentSession({ ...options, agentDir: omp.agentDir });
 		try {
 			// The user's skill snapshot is still the user's: omp tracks it by identity.
@@ -199,6 +203,8 @@ describe("the cast session in stock omp", () => {
 		} finally {
 			await session.dispose();
 		}
+		// Disposing a cast never tears the user's lifecycle down: disposing it would make a fresh one.
+		expect(AgentLifecycleManager.global()).toBe(lifecycle);
 	}, 60_000);
 
 	test("a cast's log is an omp session file in Spellbook's casts folder, never in the project's session list", async () => {
@@ -256,7 +262,7 @@ describe("the cast session in stock omp", () => {
 
 describe("runHelper and castAndLog", () => {
 	/** A stand-in session that replies with `messages`, and a stand-in log that records each entry. */
-	function fakeSdk(messages: unknown[], options: { hold?: Promise<void>; creating?: Promise<void> } = {}) {
+	function fakeSdk(messages: unknown[], options: { hold?: Promise<void>; creating?: Promise<void>; disposeThrows?: boolean } = {}) {
 		const seen = {
 			prompts: [] as string[],
 			aborted: false,
@@ -280,6 +286,7 @@ describe("runHelper and castAndLog", () => {
 			},
 			dispose: async () => {
 				seen.disposed = true;
+				if (options.disposeThrows) throw new Error("teardown failed");
 			},
 			messages,
 		};
@@ -339,7 +346,7 @@ describe("runHelper and castAndLog", () => {
 			usage: { input: 100, output: 10, cacheRead: 5, cacheWrite: 0, totalTokens: 115, cost: { total: 0.001 } },
 		},
 		{ role: "toolResult", content: [{ type: "text", text: "README.md" }] },
-		{ role: "assistant", content: [{ type: "toolCall", name: "grep", arguments: { pattern: "flaky" } }], stopReason: "toolUse" },
+		{ role: "assistant", content: [{ type: "toolCall", name: "grep", arguments: { pattern: "flaky", path: "test" } }], stopReason: "toolUse" },
 		{
 			role: "assistant",
 			content: [{ type: "thinking", thinking: "hm" }, { type: "text", text }],
@@ -350,7 +357,7 @@ describe("runHelper and castAndLog", () => {
 	test("sends the description, returns the last assistant text, lookups and usage; the session is disposed and the rules put back", async () => {
 		const { sdk, seen } = fakeSdk(replied('{"text":"ls"}'));
 		const result = await runHelper(request(seen), sdk);
-		expect(result).toMatchObject({ reply: '{"text":"ls"}', lookups: ["read omp://", "grep flaky"], log: "cast.jsonl" });
+		expect(result).toMatchObject({ reply: '{"text":"ls"}', lookups: ["read omp://", "grep flaky in test"], log: "cast.jsonl" });
 		expect(result.usage).toEqual({ input: 300, output: 30, cacheRead: 5, cacheWrite: 0, totalTokens: 335, cost: 0.003 });
 		expect(seen.prompts).toEqual(["list files here"]);
 		expect(seen.disposed).toBe(true);
@@ -399,7 +406,7 @@ describe("runHelper and castAndLog", () => {
 			landed: "List the files",
 			reply: '{"text":"List the files","explain":"lists"}',
 			answer: { text: "List the files", explain: "lists" },
-			lookups: ["read omp://", "grep flaky"],
+			lookups: ["read omp://", "grep flaky in test"],
 			usage: { totalTokens: 335, cost: 0.003 },
 			timings: { totalMs: 10 },
 		});
@@ -449,6 +456,34 @@ describe("runHelper and castAndLog", () => {
 		expect(seen.prompts).toEqual([]);
 		expect(seen.disposed).toBe(true);
 		expect(seen.rules).toEqual([{ name: "RULES", content: "user rules", alwaysApply: true }]);
+	});
+
+	test("an abort before the session exists is logged as aborted, and no session is made", async () => {
+		const { sdk, seen } = fakeSdk([]);
+		const abort = new AbortController();
+		abort.abort("aborted: something else was sent");
+		await expect(castAndLog(request(seen, abort.signal), sdk, parsePromptReply)).rejects.toThrow();
+		expect(seen.systems).toEqual([]);
+		expect(seen.entries.map(entry => entry.type)).toEqual(["session_init", CAST_ENTRY, `cast.jsonl ${OUTCOME_ENTRY}`]);
+		expect(seen.entries.at(-1)?.data).toMatchObject({ outcome: "aborted", reason: "aborted: something else was sent" });
+		expect(seen.rules).toEqual([{ name: "RULES", content: "user rules", alwaysApply: true }]);
+	});
+
+	test("a teardown that fails keeps the reply", async () => {
+		const { sdk, seen } = fakeSdk(replied('{"text":"ls"}'), { disposeThrows: true });
+		expect((await runHelper(request(seen), sdk)).reply).toBe('{"text":"ls"}');
+	});
+
+	test("rules the user's session publishes mid-cast stay; the helper's own snapshot never does", async () => {
+		const hold = Promise.withResolvers<void>();
+		const { sdk, seen } = fakeSdk(replied('{"text":"ls"}'), { hold: hold.promise });
+		const pending = runHelper(request(seen), sdk);
+		await seen.prompting.promise;
+		const edited = [{ name: "RULES", content: "edited mid-cast", alwaysApply: true }];
+		seen.rules = edited;
+		hold.resolve();
+		await pending;
+		expect(seen.rules).toBe(edited);
 	});
 
 	test("a model error surfaces as the error", () => {

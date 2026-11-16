@@ -190,6 +190,11 @@ describe("fuzzy matching (omp's fuzzyRank)", () => {
 		for (let i = 0; i < 5; i++) addSpell(ranked, "biggest folders", "du -h --max-depth=1 | sort -h", at("2026-11-11T00:00:00Z"));
 		addSpell(ranked, "folder size", "du -sh .", at("2026-11-10T00:00:00Z"));
 		expect(findSpells(ranked, "size").map(m => m.spell.words)).toEqual(["folder size", "count lines"]);
+		// A typo in the words still beats an exact hit in the command.
+		const typo = emptyBook();
+		addSpell(typo, "release notes", "git log --oneline v0.2..HEAD", at("2026-11-10T00:00:00Z"));
+		for (let i = 0; i < 5; i++) addSpell(typo, "tag it", "git tag relaese-candidate", at("2026-11-11T00:00:00Z"));
+		expect(findSpells(typo, "relaese").map(m => m.spell.words)).toEqual(["release notes", "tag it"]);
 	});
 
 	test("equal matches sort by uses, then by last used", () => {

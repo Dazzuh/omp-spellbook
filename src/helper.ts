@@ -97,6 +97,9 @@ export function helperOptions(
 		cacheWarming: false,
 		// A helper for the user's session: that session keeps the process-wide state and its agent id.
 		bindProcessState: false,
+		// A sub-agent to omp: disposing a top-level ("main") session tears down omp's process-wide
+		// agent lifecycle, which holds the user's adopted and parked subagents.
+		taskDepth: 1,
 		agentRegistry: sdk.agentRegistry(),
 		agentId: "Spellbook",
 		agentDisplayName: "spellbook",
@@ -147,39 +150,49 @@ export class CastFailed extends Error {
 /**
  * Run one cast: the model's final reply text and its trace. Before anything else, omp's rule snapshot
  * is read for the system prompt; creating the cast's session overwrites that snapshot, and it is put
- * back when the cast ends. The log records the system prompt (omp's `session_init`) and
- * {@link CAST_ENTRY} before the model is asked; omp records the rest. Throws {@link CastFailed}.
+ * back when the cast ends unless something newer replaced it meanwhile. The log records the system
+ * prompt (omp's `session_init`) and {@link CAST_ENTRY} before the model is asked, so an abort from
+ * then on is logged too; omp records the rest. Throws {@link CastFailed}.
  */
 export async function runHelper(request: HelperRequest, sdk: HelperSdk): Promise<HelperTrace & { reply: string }> {
-	request.signal.throwIfAborted();
 	const rules = sdk.activeRules();
-	const system = request.system(rules);
 	const trace: HelperTrace = { log: undefined, lookups: [], usage: castUsage([]) };
+	/** The helper session's own rule snapshot, which creating it published. */
+	let published: unknown;
 	try {
+		const system = request.system(rules);
 		const log = await sdk.castLog(request.cwd);
-		log.appendSessionInit({
-			systemPrompt: [system],
-			task: request.description,
-			tools: [...CAST_TOOLS],
-			agent: "spellbook",
-			resolvedModel: request.start.model,
-			readOnly: true,
-			restrictToolNames: true,
-		});
-		log.appendCustomEntry(CAST_ENTRY, request.start);
-		// On disk now, so a cast that ends before the model answers still leaves its log.
-		await log.ensureOnDisk();
+		try {
+			log.appendSessionInit({
+				systemPrompt: [system],
+				task: request.description,
+				tools: [...CAST_TOOLS],
+				agent: "spellbook",
+				resolvedModel: request.start.model,
+				readOnly: true,
+				restrictToolNames: true,
+			});
+			log.appendCustomEntry(CAST_ENTRY, request.start);
+			// On disk now, so a cast that ends before the model answers still leaves its log.
+			await log.ensureOnDisk();
+		} catch (error) {
+			await log.close().catch(() => {});
+			throw error;
+		}
 		trace.log = log.getSessionFile();
 		const creating = Date.now();
 		let session: HelperSession;
 		try {
+			// Aborted before the session exists (say, while the settings were read): logged, never created.
+			request.signal.throwIfAborted();
 			({ session } = await sdk.createAgentSession(
 				helperOptions(request, system, log as NonNullable<CreateAgentSessionOptions["sessionManager"]>, sdk),
 			));
 		} catch (error) {
-			await log.close();
+			await log.close().catch(() => {});
 			throw error;
 		}
+		published = sdk.activeRules();
 		trace.sessionMs = Date.now() - creating;
 		const onAbort = () => {
 			session.abort().catch(() => {});
@@ -199,14 +212,16 @@ export async function runHelper(request: HelperRequest, sdk: HelperSdk): Promise
 			trace.lookups = lookups(session.messages);
 			trace.usage = castUsage(session.messages);
 			request.signal.removeEventListener("abort", onAbort);
-			// Closes the log too: the outcome is appended with `appendToLog`.
-			await session.dispose();
+			// Closes the log too: the outcome is appended with `appendToLog`. A teardown that fails
+			// never costs the reply.
+			await session.dispose().catch(() => {});
 		}
 		return { ...trace, reply };
 	} catch (error) {
 		throw new CastFailed(request.signal.aborted ? (request.signal.reason ?? error) : error, trace);
 	} finally {
-		sdk.restoreRules(rules);
+		// The user's session may have published newer rules mid-cast (a RULES.md edit); those stay.
+		if (published === undefined || sdk.activeRules() === published) sdk.restoreRules(rules);
 	}
 }
 

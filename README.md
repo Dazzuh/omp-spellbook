@@ -40,8 +40,8 @@ installing, run `omp -e /path/to/omp-spellbook`.
 
 Commands are written for the shell that omp's `!` uses:
 
-- **Linux and macOS:** your `$SHELL` if it is zsh or fish. Otherwise omp's built-in bash engine, with your bash setup
-  loaded.
+- **Linux and macOS:** your `$SHELL` if it is bash, zsh or fish, else omp's default shell. zsh and fish run for real.
+  bash lines run in omp's built-in bash engine, with a snapshot of your bash setup.
 - **Windows:** omp's built-in bash engine. It has common tools built in, such as `ls`, `find`, `grep`, `sed` and `awk`.
   With [Git for Windows](https://git-scm.com/download/win) installed, Git Bash's programs work too. Without it,
   anything else has to be a Windows program.
@@ -97,15 +97,15 @@ From a shell, `omp plugin config list omp-spellbook` shows the settings, and
 `/spellbook` opens a panel over the session. It stays open until you press Esc, and it works while omp's agent is
 busy. Nothing in it goes into the conversation. Tab moves between its three parts:
 
-- **Spells:** your saved spells. Type to search. Enter puts the selected spell in the composer. Ctrl+X twice forgets
-  it. Each spell shows how often you used it and when.
+- **Spells:** your saved spells. Type to search. Enter puts the selected spell in the composer, a command after `!`.
+  Ctrl+X twice forgets it. Each spell shows how often you used it and when.
 - **Now:** each setting's value, the model `model` resolves to, the shell, where cast logs go, and where to change
   settings.
 - **Recent casts:** the latest casts with their model, time taken and outcome. The selected cast shows each file and
   page the model looked up, and the path of its log.
 
-In Tern the panel is a native sheet that you can also click. `/spellbook list <words>` opens it on Spells with
-`<words>` already in the search.
+In Tern the panel is a native sheet that you can also click. `/spellbook list <words>`, or `/spellbook <words>`, opens
+it on Spells with `<words>` already in the search.
 
 `/spellbook prompt <description>` is the same as typing `? <description>`. `/spellbook cast <description>` is the same
 as `?! <description>`. When omp runs headless (`omp -p`), both print the answer as JSON, and `/spellbook` prints the

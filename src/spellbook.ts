@@ -73,6 +73,15 @@ type Pending =
 /** A cast error's toast shows this many characters of its first line; the whole error is in the cast's log. */
 const ERROR_CHARS = 120;
 
+/** `message` as one toast line: its first line (a file's path and the reason stay whole). */
+export function oneLine(message: string): string {
+	return message.split(/\r?\n/, 1)[0]!;
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 /** What a cast lands: the composer text, the line under it, and what to save once it is sent. */
 interface Landing {
 	target: string;
@@ -138,7 +147,7 @@ export class Spellbook {
 		try {
 			return findSpells(readBook(this.deps.bookFile()), query, limit, kind);
 		} catch (error) {
-			if (error instanceof BookReadError) this.deps.ui.notify(error.message, "warning");
+			if (error instanceof BookReadError) this.deps.ui.notify(oneLine(error.message), "warning");
 			return [];
 		}
 	}
@@ -194,10 +203,7 @@ export class Spellbook {
 			const book = readBook(file);
 			writeBook(file, kind === "command" ? addSpell(book, words, text) : addPromptSpell(book, words, text));
 		} catch (error) {
-			this.deps.ui.notify(
-				`Spellbook could not save "${words}": ${error instanceof Error ? error.message : String(error)}`,
-				"warning",
-			);
+			this.deps.ui.notify(oneLine(`Spellbook could not save "${words}": ${errorText(error)}`), "warning");
 		}
 	}
 
@@ -212,10 +218,7 @@ export class Spellbook {
 			writeBook(file, kept);
 			return true;
 		} catch (error) {
-			this.deps.ui.notify(
-				`Spellbook could not forget "${spell.words}": ${error instanceof Error ? error.message : String(error)}`,
-				"warning",
-			);
+			this.deps.ui.notify(oneLine(`Spellbook could not forget "${spell.words}": ${errorText(error)}`), "warning");
 			return false;
 		}
 	}
@@ -245,7 +248,7 @@ export class Spellbook {
 			if (abort.signal.aborted) return;
 			ui.setLine(undefined);
 			// One line: the whole error and the model's reply are in the cast's log.
-			const message = (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0]!;
+			const message = oneLine(errorText(error));
 			const short = message.length > ERROR_CHARS ? `${message.slice(0, ERROR_CHARS - 1)}…` : message;
 			ui.notify(`Spellbook: ${short} (/spellbook → Recent casts)`, "error");
 			return;
@@ -256,7 +259,8 @@ export class Spellbook {
 			}
 		}
 		if (abort.signal.aborted) {
-			void landing.settle?.({ outcome: "aborted", reason: String(abort.signal.reason) });
+			const reason = abort.signal.reason;
+			void landing.settle?.({ outcome: reason === SUPERSEDED ? "superseded" : "aborted", reason: String(reason) });
 			return;
 		}
 		if (ui.getText() !== typed) {

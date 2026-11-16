@@ -37,7 +37,7 @@ import {
 	settingsFrom,
 	spellbookDir,
 } from "./settings";
-import { type CastResult, Spellbook } from "./spellbook";
+import { type CastResult, oneLine, Spellbook } from "./spellbook";
 
 /** Where this omp's cast logs go. */
 const castsFolder = () => castsDir(spellbookDir(getAgentDir()));
@@ -119,7 +119,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 		for (const problem of current.problems) {
 			if (reported.has(problem)) continue;
 			reported.add(problem);
-			if (ctx.hasUI) ctx.ui.notify(`Spellbook settings: ${problem}`, "warning");
+			if (ctx.hasUI) ctx.ui.notify(oneLine(`Spellbook settings: ${problem}`), "warning");
 		}
 		return current.settings;
 	};
@@ -295,20 +295,24 @@ export default function spellbook(pi: ExtensionAPI): void {
 	};
 
 	/** Open the panel over the session until Esc; it never enters the session or the model's context. */
-	const openPanel = (ctx: ExtensionContext, settings: SpellbookSettings, query: string) =>
+	const openPanel = (ctx: ExtensionContext, query: string) =>
 		ctx.ui.custom<void>(
 			(tui, _theme, _keybindings, done) =>
 				new SpellbookPanel(
 					{
 						find: (q, kind) => book.find(q, 50, kind).map(match => match.spell),
-						now: () => now(ctx, settings),
+						now: () => now(ctx, current.settings),
 						casts: () => recentCasts(castsFolder()),
-						land: spell =>
+						land: spell => {
+							const from = ctx.ui.getEditorText();
+							// The composer's own `?!!` or `!!` keeps a command's output out of context, as Tab does.
+							const sigil = /^\s*\?!!|^\s*!!/.test(from) ? "!!" : "!";
 							book.pick(
 								spell.kind === "command"
-									? { kind: "command", from: ctx.ui.getEditorText(), sigil: "!", words: spell.words, command: spell.command }
-									: { kind: "prompt", from: ctx.ui.getEditorText(), words: spell.words, prompt: spell.prompt },
-							),
+									? { kind: "command", from, sigil, words: spell.words, command: spell.command }
+									: { kind: "prompt", from, words: spell.words, prompt: spell.prompt },
+							);
+						},
 						forget: spell => book.forget(spell),
 						close: () => done(undefined),
 						requestRender: () => tui.requestRender(),
@@ -367,8 +371,9 @@ export default function spellbook(pi: ExtensionAPI): void {
 						return;
 					}
 					// Not awaited: the panel stays open while the session carries on, mid-turn too.
-					openPanel(ctx, settings, sub.toLowerCase() === "list" ? arg : "").catch(error =>
-						ctx.ui.notify(`Spellbook panel: ${error instanceof Error ? error.message : String(error)}`, "error"),
+					// `/spellbook list <words>` and `/spellbook <words>` both open Spells searching for the words.
+					openPanel(ctx, sub.toLowerCase() === "list" ? arg : args.trim()).catch(error =>
+						ctx.ui.notify(oneLine(`Spellbook panel: ${error instanceof Error ? error.message : String(error)}`), "error"),
 					);
 				}
 			}

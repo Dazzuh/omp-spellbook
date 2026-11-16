@@ -13,15 +13,19 @@
   (landed, superseded, aborted, model error, unparseable reply). Failed and abandoned casts are logged too. The folder
   is Spellbook's own, so casts never show in `/resume`, and `omp --continue` never picks one. Nothing is pruned.
 - **`/spellbook` is one panel.** It opens over the session, stays until Esc (also while the agent works) and never
-  enters the conversation. Spells: search, Enter lands a spell like Tab, Ctrl+X twice forgets one, uses and last use
+  enters the conversation. Spells: search, Enter lands a spell (a command after `!`, or `!!` when the composer holds
+  `?!!`), Ctrl+X twice forgets one, uses and last use
   shown. Now: each setting, the model `model` resolves to, the shell, the cast log folder, and where to change
   settings. Recent casts: read from the logs, with model, time, outcome, each lookup and the log's path. In Tern it is
-  a native sheet you can click. `/spellbook list [words]` opens it on Spells. Toasts are left only for one-line
+  a native sheet you can click. `/spellbook list [words]` and `/spellbook <words>` open it on Spells. Toasts are left only for one-line
   errors; a failed cast's toast points at Recent casts, where the whole error is.
 - **Fuzzy search for saved spells.** The Tab menu and the panel share one matcher, omp's own `fuzzyRank`: words in
-  any order, partial words, and one typo (two letters swapped, `gti log`). A match in the spell's words ranks above
-  one in its command or prompt; equal matches sort by uses, then last use.
+  any order, partial words, and one typo (two letters swapped, `gti log`). A match in the spell's words, typo or not,
+  ranks above one that needs its command or prompt; equal matches sort by uses, then last use.
 - **README rewritten** in plain words, with how it works in one section at the end.
+- **A cast no longer tears down your background agents.** The cast's helper session was a top-level session to omp,
+  and disposing one disposes omp's process-wide agent lifecycle, which holds the session's adopted and parked
+  subagents. It is now a sub-agent session, so ending a cast leaves them alone.
 - **Settings on the Configure page.** `style` and `bookPath` are declared as omp plugin settings, so they show on
   Spellbook's `/plugins` Configure page and in `omp plugin config list omp-spellbook`. They are read on every use,
   so a change applies to the next cast without a restart. `<omp agent dir>/spellbook/settings.json` is no longer
