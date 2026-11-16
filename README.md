@@ -98,7 +98,7 @@ From a shell, `omp plugin config list omp-spellbook` shows the settings, and
 busy. Nothing in it goes into the conversation. Tab moves between its three parts:
 
 - **Spells:** your saved spells. Type to search. Enter puts the selected spell in the composer, a command after `!`.
-  Ctrl+X twice forgets it. Each spell shows how often you used it and when.
+  Ctrl+X asks to forget it, and Enter or a second Ctrl+X forgets it. Each spell shows how often you used it and when.
 - **Now:** each setting's value, the model `model` resolves to, the shell, where cast logs go, and where to change
   settings.
 - **Recent casts:** the latest casts with their model, time taken and outcome. The selected cast shows each file and

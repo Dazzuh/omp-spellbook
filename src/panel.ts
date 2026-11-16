@@ -235,11 +235,14 @@ export class SpellbookPanel implements Component {
 	#land(): void {
 		const picked = this.#selectedSpell();
 		if (!picked) return;
+		// Enter answers the forget question: Ctrl+X, then Enter, forgets.
+		if (this.#forgetting?.id === picked.id) return this.#forget(true);
+		this.#forgetting = undefined;
 		this.#deps.close();
 		this.#deps.land(picked.spell);
 	}
 
-	/** First Ctrl+X asks, the second forgets. */
+	/** Ctrl+X asks; Enter or a second Ctrl+X forgets. */
 	#forget(confirmed: boolean): void {
 		const picked = this.#selectedSpell();
 		if (!picked) return;
@@ -342,7 +345,7 @@ export class SpellbookPanel implements Component {
 				lines.push("", ...full.split(/\r?\n/).slice(0, 4).map(line => paint("muted", `  ${line}`)));
 			}
 		}
-		if (this.#forgetting) lines.push("", paint("warning", `  Forget "${this.#forgetting.spell.words}"? Ctrl+X again to forget, Esc to keep.`));
+		if (this.#forgetting) lines.push("", paint("warning", `  Forget "${this.#forgetting.spell.words}"? Enter or Ctrl+X to forget, Esc to keep.`));
 		else if (this.#status) lines.push("", paint("dim", `  ${this.#status}`));
 		return lines.map(line => truncateToWidth(line, width));
 	}
@@ -487,9 +490,10 @@ export class SpellbookPanel implements Component {
 				this.#section === "spells" ? this.#spells.map(entry => entry.id) : this.#section === "now" ? this.#now.map((_, i) => `now:${i}`) : this.#casts.map((_, i) => `cast:${i}`);
 			const at = ids.indexOf(event.item);
 			if (at === -1 || !Number.isFinite(index)) return;
+			const moved = this.#selected[this.#section] !== at;
 			this.#selected[this.#section] = at;
-			this.#forgetting = undefined;
 			if (event.type === "activate" && this.#section === "spells") return this.#land();
+			if (moved) this.#forgetting = undefined;
 			this.#changed();
 			return;
 		}
@@ -506,6 +510,12 @@ export class SpellbookPanel implements Component {
 				return this.#forget(true);
 			case "close":
 			case "cancel":
+				// Esc on the forget question keeps the spell and the panel.
+				if (event.act === "cancel" && this.#forgetting) {
+					this.#forgetting = undefined;
+					this.#changed();
+					return;
+				}
 				this.#deps.close();
 				return;
 		}

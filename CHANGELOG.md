@@ -14,7 +14,7 @@
   is Spellbook's own, so casts never show in `/resume`, and `omp --continue` never picks one. Nothing is pruned.
 - **`/spellbook` is one panel.** It opens over the session, stays until Esc (also while the agent works) and never
   enters the conversation. Spells: search, Enter lands a spell (a command after `!`, or `!!` when the composer holds
-  `?!!`), Ctrl+X twice forgets one, uses and last use
+  `?!!`), Ctrl+X then Enter (or Ctrl+X again) forgets one, uses and last use
   shown. Now: each setting, the model `model` resolves to, the shell, the cast log folder, and where to change
   settings. Recent casts: read from the logs, with model, time, outcome, each lookup and the log's path. In Tern it is
   a native sheet you can click. `/spellbook list [words]` and `/spellbook <words>` open it on Spells. Toasts are left only for one-line

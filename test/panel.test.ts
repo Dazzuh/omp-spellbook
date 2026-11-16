@@ -171,7 +171,7 @@ describe("the panel", () => {
 		expect(state.closed).toBe(1);
 	});
 
-	test("Ctrl+X asks, a second Ctrl+X forgets; Esc first cancels the question, then closes", () => {
+	test("Ctrl+X asks; a second Ctrl+X or Enter forgets; Esc first cancels the question, then closes", () => {
 		const { component, state } = panel(sampleBook());
 		component.handleInput(KEY.ctrlX);
 		expect(component.render(100).join("\n")).toContain('Forget "show disk usage"?');
@@ -184,6 +184,13 @@ describe("the panel", () => {
 		expect(component.render(100).join("\n")).toContain('Forgot "show disk usage".');
 		component.handleInput(KEY.esc);
 		expect(state.closed).toBe(1);
+		// Ctrl+X, then Enter, forgets too: Enter answers the question instead of landing.
+		const enter = panel(sampleBook());
+		enter.component.handleInput(KEY.ctrlX);
+		enter.component.handleInput(KEY.enter);
+		expect(enter.state.landed).toEqual([]);
+		expect(enter.state.book.entries).toHaveLength(2);
+		expect(enter.state.closed).toBe(0);
 	});
 
 	test("Tab moves through Spells, Now and Recent casts; each renders within the width", () => {
@@ -237,6 +244,15 @@ describe("the panel", () => {
 		expect(state.landed.map(spell => spell.words)).toEqual(["git log recent commits"]);
 		component.handleNativeEvent({ type: "action", key: "", act: "close", mods: [] });
 		expect(state.closed).toBe(2);
+		// Forget asks; Esc on the question keeps the spell and the sheet; Enter (activate) on it forgets.
+		const asked = panel(sampleBook());
+		asked.component.handleNativeEvent({ type: "action", key: "", act: "forget", mods: [] });
+		asked.component.handleNativeEvent({ type: "action", key: "", act: "cancel", mods: [] });
+		expect(asked.state.closed).toBe(0);
+		asked.component.handleNativeEvent({ type: "action", key: "", act: "forget", mods: [] });
+		asked.component.handleNativeEvent({ type: "activate", key: "", item: "command:0" });
+		expect(asked.state.landed).toEqual([]);
+		expect(asked.state.book.entries).toHaveLength(2);
 		// A terminal without the picker kind gets the rows.
 		expect(component.describe({ ...cx, supports: () => false })).toBeNull();
 	});
