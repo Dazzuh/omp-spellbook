@@ -150,6 +150,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 			setLine: line =>
 				ctxNow().ui.setWidget("spellbook", line === undefined ? undefined : [line], { placement: "belowEditor" }),
 			notify: (message, type) => ctxNow().ui.notify(message, type),
+			remember: text => display.editor?.addToHistory?.(text),
 		},
 		display,
 		settings: () => current.settings,

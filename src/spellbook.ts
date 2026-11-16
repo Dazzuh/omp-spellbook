@@ -25,6 +25,11 @@ export interface SpellbookUi {
 	/** Show (or with undefined, clear) the plain-words line under the composer. */
 	setLine(line: string | undefined): void;
 	notify(message: string, type?: "info" | "warning" | "error"): void;
+	/**
+	 * Put a line the user pressed Enter on into the composer's history (Up/Down), as omp does for
+	 * what it sends itself; omp never records a line an `input` hook took.
+	 */
+	remember(text: string): void;
 }
 
 export interface SpellbookDeps {
@@ -120,10 +125,11 @@ export class Spellbook {
 	}
 
 	/**
-	 * The `input` hook: a `?`, `?!` or `?!!` line is taken and cast (returns `{ handled: true }`).
-	 * Enter during a morph is taken too and finishes the morph, so a half-drawn spell never goes
-	 * out. A sent prompt spell is saved; a `!` line keeps a pending spell for `user_bash` to save;
-	 * anything else drops it and any cast still in flight.
+	 * The `input` hook: a `?`, `?!` or `?!!` line is taken, put in the composer's history and cast
+	 * (returns `{ handled: true }`). Enter during a morph is taken too and finishes the morph, so a
+	 * half-drawn spell never goes out; that Enter sent nothing, so nothing goes into history. A sent
+	 * prompt spell is saved; a `!` line keeps a pending spell for `user_bash` to save; anything else
+	 * drops it and any cast still in flight.
 	 */
 	onInput(text: string): { handled: true } | undefined {
 		const target = this.#morphTarget;
@@ -134,6 +140,7 @@ export class Spellbook {
 		}
 		const cast = parseCast(text);
 		if (cast) {
+			this.deps.ui.remember(text);
 			void this.cast(cast);
 			return { handled: true };
 		}

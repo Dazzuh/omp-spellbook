@@ -36,6 +36,8 @@ function harness(
 		asked: [] as string[],
 		askedPrompts: [] as string[],
 		timers: [] as (() => void)[],
+		/** The composer's Up/Down history, oldest first: what Spellbook remembers and what omp records itself. */
+		recalled: [] as string[],
 	};
 	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 	const answer: CastAnswer = options.answer ?? { text: "ls -la", explain: "Lists every file here.", destructive: false };
@@ -51,6 +53,9 @@ function harness(
 			},
 			notify: message => {
 				state.notes.push(message);
+			},
+			remember: text => {
+				state.recalled.push(text);
 			},
 		},
 		display,
@@ -76,10 +81,12 @@ function harness(
 		},
 		paint: (color, text) => `<${color}>${text}</${color}>`,
 	});
-	/** Submit like omp: the editor resets, then the input hook runs. */
+	/** Submit like omp: the editor resets, then the input hook runs; a line the hook leaves, omp records in history. */
 	const submit = (text: string) => {
 		state.text = "";
-		return book.onInput(text);
+		const taken = book.onInput(text);
+		if (!taken) state.recalled.push(text);
+		return taken;
 	};
 	const flush = async () => {
 		for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -598,6 +605,38 @@ describe("the line under the composer", () => {
 	});
 });
 
+describe("composer history", () => {
+	test("every spell line sent goes into history, in the order lines were entered", async () => {
+		h = harness({ reduceMotion: true });
+		h.submit("?! list files here");
+		await h.flush();
+		h.submit(h.state.text);
+		h.submit("? review this repo");
+		await h.flush();
+		h.submit("?!! list files here");
+		await h.flush();
+		expect(h.state.recalled).toEqual(["?! list files here", "!ls -la", "? review this repo", "?!! list files here"]);
+	});
+
+	test("a landed result that is wiped, never sent, stays out of history", async () => {
+		h = harness({ reduceMotion: true });
+		h.submit("? review this repo");
+		await h.flush();
+		h.state.text = "";
+		h.book.onTextChange("");
+		expect(h.state.recalled).toEqual(["? review this repo"]);
+	});
+
+	test("Enter that only finishes a morph sends nothing and records nothing", async () => {
+		h = harness();
+		h.submit("?! list files here");
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		h.state.timers.shift()!();
+		expect(h.submit(h.state.text)).toEqual({ handled: true });
+		expect(h.state.recalled).toEqual(["?! list files here"]);
+	});
+});
+
 describe("casting state", () => {
 	test("the spell line is marked as casting while the model answers, and not once the command lands", async () => {
 		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
@@ -660,6 +699,52 @@ describe("/spellbook cast", () => {
 		await commands.get("spellbook")!.handler("cast list files here", ctx);
 		expect(texts[0]).toBe("?! list files here");
 		expect(notes.join("\n")).toContain("no model");
+	});
+});
+
+describe("composer history in omp", () => {
+	test("a ? line the input hook takes goes to omp's editor history; a line it leaves does not", async () => {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+		spellbook({
+			setLabel() {},
+			on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+				handlers.set(name, handler);
+			},
+			registerCommand() {},
+		} as never);
+		const recalled: string[] = [];
+		const editor = {
+			invalidate() {},
+			decorateText: undefined,
+			describeDecorations: undefined,
+			describe: () => ({}),
+			addToHistory: (text: string) => recalled.push(text),
+		};
+		let factory: ((...args: unknown[]) => unknown) | undefined;
+		const ctx = {
+			hasUI: true,
+			mode: "tui",
+			cwd: os.tmpdir(),
+			ui: {
+				getEditorText: () => "",
+				setEditorText() {},
+				setWidget() {},
+				notify() {},
+				addAutocompleteProvider() {},
+				getEditorComponent: () => () => editor,
+				setEditorComponent: (make: (...args: unknown[]) => unknown) => {
+					factory = make;
+				},
+			},
+			modelRegistry: { getAvailable: () => [] },
+			model: undefined,
+			sessionManager: { getSessionFile: () => undefined },
+		};
+		await handlers.get("session_start")!({}, ctx);
+		factory!({ requestRender() {} }, {}, {});
+		expect(handlers.get("input")!({ text: "? review this repo", source: "interactive" }, ctx)).toEqual({ handled: true });
+		expect(handlers.get("input")!({ text: "review this repo", source: "interactive" }, ctx)).toBeUndefined();
+		expect(recalled).toEqual(["? review this repo"]);
 	});
 });
 
