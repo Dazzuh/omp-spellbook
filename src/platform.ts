@@ -129,7 +129,6 @@ export function detectShell(probe: ShellProbe): ShellInfo {
 			notes.push(
 				builtins,
 				"Windows with Git Bash: lines run in omp's embedded bash engine, not a Git Bash process, so MSYS-only extras (`pwd -W`, `cygpath`) fail; `pwd` already prints a Windows path. Git Bash programs and Windows programs on PATH run too.",
-				"Paths: write C:/Users/... or /c/Users/...; quote paths with spaces.",
 			);
 		}
 	} else if (family === "bash") {
@@ -174,28 +173,5 @@ export function describeOs(): string {
 		}
 		default:
 			return `${process.platform} ${release}`;
-	}
-}
-
-/** Host aliases from an OpenSSH config text: `Host` names without wildcards or negations. */
-export function parseSshHosts(configText: string): string[] {
-	const hosts: string[] = [];
-	for (const line of configText.split(/\r?\n/)) {
-		const match = /^\s*Host\s+(.+?)\s*$/i.exec(line);
-		if (!match) continue;
-		for (const name of match[1]!.split(/\s+/)) {
-			if (!name || /[*?!]/.test(name) || hosts.includes(name)) continue;
-			hosts.push(name);
-		}
-	}
-	return hosts;
-}
-
-/** Host aliases from `~/.ssh/config`; empty when there is none. */
-export function readSshHosts(home: string = os.homedir()): string[] {
-	try {
-		return parseSshHosts(fs.readFileSync(path.join(home, ".ssh", "config"), "utf8"));
-	} catch {
-		return [];
 	}
 }

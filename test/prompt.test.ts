@@ -1,118 +1,69 @@
 import { describe, expect, test } from "bun:test";
-import { pickModel, replyText } from "../src/model";
-import { detectShell, type ShellInfo } from "../src/platform";
-import { buildSystemPrompt, buildUserMessage, type ContextPacket, parseAnswer, REQUEST_BUDGET } from "../src/prompt";
+import type { ShellInfo } from "../src/platform";
+import { parsePromptReply, parseShellReply, promptSystemPrompt, shellSystemPrompt } from "../src/prompt";
 
-const BASH: ShellInfo = { platform: "linux", shell: "/bin/bash", family: "bash", notes: [] };
 const GIT_BASH: ShellInfo = {
 	platform: "win32",
 	shell: "C:\\Program Files\\Git\\bin\\bash.exe",
 	family: "bash",
-	notes: ["Windows with Git Bash: GNU coreutils available.", "Paths: C:/Users/..."],
+	notes: ["omp's embedded shell has these built in on every OS: ls, find."],
 };
+const PLACES = { sessionLog: "C:/Users/u/.omp/agent/sessions/x/1.jsonl", cwd: "C:/work/project" };
 
-describe("request size", () => {
-	test("stays under 4 KB in UTF-8 bytes even with every list overfull and multi-byte text", () => {
-		// 3- and 4-byte characters: a cap counted in UTF-16 units would let these through at 2-4x.
-		const long = "語😀".repeat(3000);
-		const shell = detectShell({
-			platform: "win32",
-			env: {},
-			exists: () => false,
-			which: () => undefined,
-			ompShell: "C:\\Program Files\\Git\\bin\\bash.exe",
-		});
-		const packet: ContextPacket = {
-			description: `delete ${long}`,
-			cwd: `C:/${long}`,
-			os: "Windows 10.0.26200",
-			shell,
-			sshHosts: Array.from({ length: 200 }, (_, i) => `host-${i}`),
-			recentCommands: Array.from({ length: 100 }, (_, i) => `echo ${i} ${long}`),
-			spells: Array.from({ length: 50 }, (_, i) => ({ words: `words ${i} ${long}`, command: `cmd ${i} ${long}` })),
-		};
-		const message = buildUserMessage(packet);
-		const bytes = Buffer.byteLength(buildSystemPrompt(packet.shell), "utf8") + Buffer.byteLength(message, "utf8");
-		expect(bytes).toBeLessThanOrEqual(REQUEST_BUDGET);
-		expect(REQUEST_BUDGET).toBeLessThan(4096);
-		// Cuts land on code points: no lone surrogate halves.
-		expect(message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
-		expect(message).toContain("Description: delete 語😀");
-		expect(message).toContain("Note: omp's embedded shell has these built in");
-	});
-
-	test("a typical request is well under 2 KB and carries no conversation", () => {
-		const packet: ContextPacket = {
-			description: "list files here",
-			cwd: "/home/dz/project",
-			os: "Linux 6.8 (Ubuntu 24.04)",
-			shell: BASH,
-			sshHosts: ["donnager", "donnager-root"],
-			recentCommands: ["git status", "bun test"],
-			spells: [{ words: "list files", command: "ls -la" }],
-		};
-		const user = buildUserMessage(packet);
-		expect(Buffer.byteLength(buildSystemPrompt(BASH) + user)).toBeLessThan(2048);
-		expect(user).toContain("Description: list files here");
-		expect(user).toContain("SSH host aliases: donnager, donnager-root");
-		expect(user).toContain("list files → ls -la");
-	});
-
-	test("the system prompt names the platform and shell, never assuming Linux", () => {
-		expect(buildSystemPrompt(GIT_BASH)).toContain("runs in bash on Windows");
-		expect(buildSystemPrompt({ ...BASH, platform: "darwin", family: "zsh", shell: "/bin/zsh" })).toContain(
-			"runs in zsh on macOS",
-		);
-		expect(buildSystemPrompt({ ...BASH, family: "fish", shell: "/usr/bin/fish" })).toContain("Write fish syntax");
-	});
-});
-
-describe("parseAnswer", () => {
-	test("plain JSON, fenced JSON, and JSON with chatter around it", () => {
-		const json = '{"command":"ls -la","explain":"Lists files.","destructive":false}';
-		for (const reply of [json, `\`\`\`json\n${json}\n\`\`\``, `Sure! ${json} Hope that helps.`]) {
-			expect(parseAnswer(reply)).toEqual({ command: "ls -la", explain: "Lists files.", destructive: false });
+describe("system prompts", () => {
+	test("both name every place the model can look: the session log, omp://, skill://, cfg:// and the project", () => {
+		for (const system of [promptSystemPrompt(PLACES), shellSystemPrompt(PLACES, GIT_BASH, "Windows 10.0.26200")]) {
+			expect(system).toContain(PLACES.sessionLog);
+			expect(system).toContain("omp://");
+			expect(system).toContain("skill://");
+			expect(system).toContain("cfg://");
+			expect(system).toContain(PLACES.cwd);
 		}
 	});
 
-	test("strips a leading $, ! or backticks; a multi-line command keeps its lines", () => {
-		expect(parseAnswer('{"command":"$ cd build\\r\\nrm -rf out","explain":"x"}')?.command).toBe("cd build\nrm -rf out");
-		expect(parseAnswer('{"command":"!git status"}')?.command).toBe("git status");
-		expect(parseAnswer("`du -sh .`")?.command).toBe("du -sh .");
+	test("a session without a log file leaves the log line out", () => {
+		expect(promptSystemPrompt({ sessionLog: undefined, cwd: "/p" })).not.toContain("JSONL");
 	});
 
-	test("no command, no answer", () => {
-		expect(parseAnswer('{"command":""}')).toBeUndefined();
-		expect(parseAnswer("")).toBeUndefined();
+	test("? asks for the text and its explanation; ?! adds the destructive flag and says where the line runs", () => {
+		expect(promptSystemPrompt(PLACES)).toContain('{"text": "<the prompt>", "explain":');
+		expect(promptSystemPrompt(PLACES)).not.toContain("destructive");
+		const shell = shellSystemPrompt(PLACES, GIT_BASH, "Windows 10.0.26200");
+		expect(shell).toContain('{"text": "<the command>", "explain":');
+		expect(shell).toContain('"destructive":');
+		expect(shell).toContain("It runs in bash (C:\\Program Files\\Git\\bin\\bash.exe) on Windows 10.0.26200");
+		expect(shell).toContain(GIT_BASH.notes[0]!);
 	});
 });
 
-describe("pickModel", () => {
-	const models = (roles: Record<string, string | undefined>, current?: string) => ({
-		resolve: (spec: string) => roles[spec],
-		current: () => current,
+describe("the reply envelope", () => {
+	test("text lands exactly as the model wrote it: spaces, newlines, backticks, `$` and `!` kept", () => {
+		const text = "  $ !ls `pwd`\n  && echo done  ";
+		const reply = JSON.stringify({ text, explain: "Lists.", destructive: false });
+		expect(parseShellReply(reply)).toEqual({ text, explain: "Lists.", destructive: false });
+		expect(parsePromptReply(reply)).toEqual({ text, explain: "Lists." });
 	});
 
-	test("role spellbook first, then smol, then the session model", () => {
-		expect(pickModel(models({ "@spellbook": "haiku", "@smol": "mini" }, "opus"))).toEqual({
-			model: "haiku",
-			via: "spellbook",
-		});
-		expect(pickModel(models({ "@smol": "mini" }, "opus"))).toEqual({ model: "mini", via: "smol" });
-		expect(pickModel(models({}, "opus"))).toEqual({ model: "opus", via: "session" });
-		expect(pickModel(models({}))).toBeUndefined();
+	test("the envelope is found in a fence or with words around it", () => {
+		const json = '{"text":"Review src/ with skill://reviewer. orchestrate","explain":"Asks for a review."}';
+		for (const reply of [json, `\`\`\`json\n${json}\n\`\`\``, `Here it is:\n${json}\nDone.`]) {
+			expect(parsePromptReply(reply)).toEqual({
+				text: "Review src/ with skill://reviewer. orchestrate",
+				explain: "Asks for a review.",
+			});
+		}
 	});
 
-	test("replyText joins text blocks and surfaces errors", () => {
-		expect(
-			replyText({
-				content: [
-					{ type: "thinking", text: "hmm" },
-					{ type: "text", text: "a" },
-					{ type: "text", text: "b" },
-				],
-			}),
-		).toBe("ab");
-		expect(() => replyText({ content: [], stopReason: "error", errorMessage: "rate limited" })).toThrow("rate limited");
+	test("only the model's own true marks a command destructive", () => {
+		expect(parseShellReply('{"text":"rm x","destructive":true}')?.destructive).toBe(true);
+		expect(parseShellReply('{"text":"rm x","destructive":"yes"}')?.destructive).toBe(false);
+		expect(parseShellReply('{"text":"rm x"}')).toEqual({ text: "rm x", explain: "", destructive: false });
+	});
+
+	test("no text, no answer: nothing is guessed from a reply without the envelope", () => {
+		for (const reply of ["", "ls -la", '{"text":""}', '{"text":"  "}', '{"command":"ls"}', "[1]"]) {
+			expect(parsePromptReply(reply)).toBeUndefined();
+			expect(parseShellReply(reply)).toBeUndefined();
+		}
 	});
 });

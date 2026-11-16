@@ -14,8 +14,7 @@ import { destructiveReason } from "./danger";
 import type { MorphDisplay } from "./editor";
 import { FRAME_MS, morphFrames } from "./morph";
 import { type CastRequest, castPrefix, parseCast, parseShellLine, type PromptCast, type ShellCast } from "./parse";
-import type { CastAnswer, ContextPacket } from "./prompt";
-import type { PromptAnswer } from "./prompt-spell";
+import type { CastAnswer, PromptAnswer } from "./prompt";
 import type { SpellbookSettings } from "./settings";
 import type { SpellPick } from "./autocomplete";
 
@@ -35,11 +34,9 @@ export interface SpellbookDeps {
 	bookFile(): string;
 	/** Whether motion is off (omp `tui.motion` or Tern's Reduce Motion). */
 	reduceMotion(): boolean;
-	/** The context packet minus the description and spells. */
-	context(): Omit<ContextPacket, "description" | "spells">;
 	/** Ask the model for a command; resolves with its answer and the model's name. */
-	ask(packet: ContextPacket, signal: AbortSignal): Promise<{ answer: CastAnswer; model: string }>;
-	/** Ask the model for a prompt from the description and omp's catalogue alone; resolves with the landed answer. */
+	ask(description: string, signal: AbortSignal): Promise<{ answer: CastAnswer; model: string }>;
+	/** Ask the model for a prompt for omp's agent; resolves with its answer and the model's name. */
 	askPrompt(description: string, signal: AbortSignal): Promise<{ answer: PromptAnswer; model: string }>;
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
@@ -48,8 +45,7 @@ export interface SpellbookDeps {
 
 /**
  * What Spellbook put in the composer, waiting to be sent so it can be saved: a command (sent
- * through `user_bash`) or a prompt spell's text (sent through `input`, or through `user_bash` for
- * a `!omp config set` line).
+ * through `user_bash`) or a prompt spell's text (sent through `input`).
  */
 type Pending =
 	| { kind: "command"; words: string; sigil: "!" | "!!"; command: string }
@@ -64,30 +60,19 @@ interface Landing {
 
 /** The plain-words line under the composer: what the command does, with a warning first when it destroys data. */
 export function plainWordsLine(answer: CastAnswer, paint: (color: string, text: string) => string): string {
-	const reason = destructiveReason(answer.command) ?? (answer.destructive ? "changes or deletes data" : undefined);
+	const reason = destructiveReason(answer.text) ?? (answer.destructive ? "changes or deletes data" : undefined);
 	const explain = answer.explain || "No explanation from the model; read the command before sending it.";
 	if (!reason) return `${paint("accent", "✦")} ${explain}`;
 	return `${paint("error", `⚠ Destructive: ${reason}.`)} ${explain}`;
 }
 
-const PROMPT_EXPLAIN: Record<PromptAnswer["kind"], string> = {
-	prompt: "A prompt for omp's agent; read it before sending.",
-	command: "An omp command; read it before sending.",
-	setting: "Changes an omp setting when sent.",
-};
-
-/** The line under the composer for a prompt spell: what sending it does, then anything Spellbook changed. */
+/** The line under the composer for a prompt spell: what sending it does. */
 export function promptWordsLine(answer: PromptAnswer, paint: (color: string, text: string) => string): string {
-	const line = `${paint("accent", "✦")} ${answer.explain || PROMPT_EXPLAIN[answer.kind]}`;
-	return answer.warnings.length ? `${line} ${paint("warning", `⚠ ${answer.warnings.join("; ")}.`)}` : line;
+	return `${paint("accent", "✦")} ${answer.explain || "No explanation from the model; read the prompt before sending it."}`;
 }
 
-/**
- * Whether `sent` is still the prompt Spellbook landed, edits allowed: the same slash command, or
- * at least half of the landed prompt's words.
- */
+/** Whether `sent` is still the prompt Spellbook landed, edits allowed: at least half of the landed prompt's words. */
 export function stillThePrompt(landed: string, sent: string): boolean {
-	if (landed.startsWith("/")) return sent.split(/\s+/, 1)[0] === landed.split(/\s+/, 1)[0];
 	const want = new Set(tokens(landed));
 	if (want.size === 0) return false;
 	const have = new Set(tokens(sent));
@@ -146,20 +131,15 @@ export class Spellbook {
 
 	/**
 	 * The `user_bash` hook: save the command that was sent under the words that asked for it. An
-	 * edited command is saved as sent; a command for another program is not the spell's answer. A
-	 * prompt spell that landed as `!omp config set …` is saved as a prompt spell, `!` included.
+	 * edited command is saved as sent; a command for another program is not the spell's answer.
 	 */
 	onUserBash(command: string): void {
 		const pending = this.#pending;
 		this.#pending = undefined;
-		if (!pending || !command.trim()) return;
-		const landed = pending.kind === "command" ? { sigil: pending.sigil, command: pending.command } : parseShellLine(pending.text);
-		if (!landed) return;
+		if (pending?.kind !== "command" || !command.trim()) return;
 		const [sentProgram] = command.trim().split(/\s+/, 1);
-		const [spellProgram] = landed.command.trim().split(/\s+/, 1);
-		if (sentProgram !== spellProgram) return;
-		if (pending.kind === "command") this.#save(pending.words, "command", command);
-		else this.#save(pending.words, "prompt", `${landed.sigil}${command.trim()}`);
+		const [spellProgram] = pending.command.trim().split(/\s+/, 1);
+		if (sentProgram === spellProgram) this.#save(pending.words, "command", command);
 	}
 
 	#save(words: string, kind: SpellKind, text: string): void {
@@ -220,12 +200,11 @@ export class Spellbook {
 	}
 
 	async #askShell(request: ShellCast, signal: AbortSignal): Promise<Landing> {
-		const spells = this.find(request.description, 5).map(m => ({ words: m.spell.words, command: m.spell.command }));
-		const { answer } = await this.deps.ask({ ...this.deps.context(), description: request.description, spells }, signal);
+		const { answer } = await this.deps.ask(request.description, signal);
 		return {
-			target: `${request.sigil}${answer.command}`,
+			target: `${request.sigil}${answer.text}`,
 			line: plainWordsLine(answer, this.deps.paint),
-			pending: { kind: "command", words: request.description, sigil: request.sigil, command: answer.command },
+			pending: { kind: "command", words: request.description, sigil: request.sigil, command: answer.text },
 		};
 	}
 
@@ -250,7 +229,7 @@ export class Spellbook {
 			return;
 		}
 		this.#pending = { kind: "command", words: pick.words, sigil: pick.sigil, command: pick.command };
-		ui.setLine(plainWordsLine({ command: pick.command, explain: saved, destructive: false }, paint));
+		ui.setLine(plainWordsLine({ text: pick.command, explain: saved, destructive: false }, paint));
 		this.morph(ui.getText(), `${pick.sigil}${pick.command}`);
 	}
 

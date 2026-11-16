@@ -1,23 +1,20 @@
 # Spellbook
 
 Forget the flags, keep the words. Spellbook is an [omp](https://omp.sh) plugin: type `?` and what you want in
-plain words, and omp's own way of asking for it morphs into the composer: a prompt that names the skills and magic
-keywords that fit, a slash command, a setting, or with `?!` a shell command. You read it, edit it if you like, and
-press Enter. Nothing is sent or run until you do; Enter while the morph is still playing only finishes it.
+plain words, and a model that looks omp up for itself turns it into the prompt omp's agent needs, naming the skills,
+docs and magic keywords that help; with `?!` it writes the shell command instead. It morphs into the composer; you
+read it, edit it if you like, and press Enter. Nothing is sent or run until you do; Enter while the morph is still
+playing only finishes it.
 
 ![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into "orchestrate a review of this repo for bugs. Get a few agents to each take a separate area of the codebase…"; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
 
-- `? <description>` → what to type into omp for it:
-  - a **prompt** for the agent, naming your installed skills that apply as `skill://<name>` and using a magic
-    keyword such as `orchestrate` when the task fits one (only keywords you have switched on);
-  - a **slash command** when that's what you described (`? compact the conversation` → `/compact`);
-  - a **setting** as `!omp config set <key> <value>` (`? turn off auto compaction` →
-    `!omp config set compaction.enabled false`), with the `!` so Enter runs it rather than sending it as prose.
+- `? <description>` → a **prompt** for omp's agent, and only ever a prompt. Ask about a setting and you get a prompt
+  asking omp about it: omp's agent reads your settings and asks before it changes one.
 - `?! <description>` → `!<command>` (runs in your shell, output goes to the model's context, as omp's `!` does)
 - `?!! <description>` → `!!<command>` (output kept out of the model's context)
-- A line under the composer says in plain words what the text does, with a **⚠ Destructive** warning when a command
-  deletes, moves over, overwrites, force-pushes or stops something (a local check of the command, plus the model's
-  own flag), and a note when Spellbook had to correct the model (a skill you don't have, a keyword you switched off).
+- A line under the composer says in the model's words what the text does, with a **⚠ Destructive** warning when a
+  command deletes, moves over, overwrites, force-pushes or stops something (a local check of the command, plus the
+  model's own flag).
 - Every prompt and command you send after a spell is saved in your **spellbook** under your own words. Next time,
   type `?` (prompts) or `?!` (commands) and a few of those words and press **Tab**: pick the saved one, no model call.
 
@@ -78,44 +75,41 @@ shimmering like a magic keyword; plain terminals show the prefix in colour and a
 
 ## Choosing the model
 
-Spellbook asks a small, fast model. It uses omp's model roles, like the rest of omp:
+Spellbook uses omp's model roles, like the rest of omp, and runs the model exactly as the role is configured,
+thinking level included:
 
 1. the `spellbook` role, when you set one;
 2. else the `smol` role;
-3. else the model the session runs on.
+3. else the model the session runs on, at the session's thinking level.
 
 Give Spellbook its own model in your omp `config.yml`:
 
 ```yaml
 modelRoles:
-  spellbook: anthropic/claude-haiku-5-5
+  spellbook: anthropic/claude-haiku-5-5:low
 ```
 
 Any model you are logged in to works (`/login`, or the provider's API key in the environment).
 
 ### What the model sees
 
-Never your conversation. For a `?` prompt spell, Spellbook first builds a plain-words map of omp from omp itself, once
-per session: every doc page's title and first sentence, every setting with its description, the magic keywords you
-have switched on with omp's own descriptions, your skills and slash commands. A first call shows that map and your
-description to the model, which picks up to three doc pages, up to eight settings and the keywords that fit, by meaning,
-so you don't need omp's words. A second call writes the prompt from the catalogue, the picked pages' text, settings and
-keywords, and your description. Each call is capped at 128,000 bytes. The answer is checked before it lands: a skill
-you don't have is never named, `/skill:` becomes `skill://`, a keyword you switched off is taken out, and an unknown
-setting is flagged. The writer also gets omp's own guidance on when its agent works alone and when it splits work
-across subagents, so a request with parts is written out with its goal, scope, parts and what done looks like, while a
-small one stays short. A setting omp marks experimental or risky is never one Enter away: you get a prompt asking omp
-to explain it instead, with the `!omp config set` line in the note under it if you want it anyway.
+Your description, and tools to look the rest up itself. Each cast runs the model in a small omp session of its own,
+kept in memory and thrown away after, whose only tools are `read`, `grep` and `glob`: they read files and omp's own
+`omp://`, `skill://` and `cfg://` pages, and nothing they do writes or runs anything. Its instructions tell it where to
+look:
 
-Settings in the map show your current value where you changed it from the default. A setting change lands only when
-a quick third call says that moving it from your current value does what you asked, judged by omp's own description
-of the setting and each of its values; otherwise (or when it is already at that value) you get a prompt asking omp to
-explain the feature instead. A setting change's note says how to undo it, with your current value.
+- your conversation so far, from the session's own log file;
+- omp's documentation (`omp://`);
+- your skills (`skill://<name>`);
+- omp's settings and their current values (`cfg://`);
+- the project you're in.
 
-For a `?!`/`?!!` command: the description, the working folder, the OS, the shell `!` runs in (plus notes such as which
-tools omp's shell has built in), your SSH host aliases from `~/.ssh/config` (names only), your last few `!` commands in
-this session, and up to four saved commands with similar words. That request is capped at 4,000 bytes: when it would
-be bigger, the oldest recent commands go first, then saved commands, then host aliases.
+So `? fix that flaky test I mentioned` can work: the model reads back what you said. It replies with the text to land
+and a sentence for the line under the composer (plus, for a command, whether it destroys anything), and that text
+lands as written. For `?!`/`?!!` the instructions also say which shell `!` runs in on which OS, with what omp's
+shell has built in.
+
+A cast takes as long as the model spends looking things up: a few seconds to a minute or so.
 
 ## Settings
 
@@ -126,7 +120,6 @@ by default):
 | --- | --- | --- | --- |
 | `style` | `diff`, `decode`, `rewind`, `none` | `diff` | `/spellbook style decode` |
 | `bookPath` | a path; `~` is your home folder, a relative path sits beside `settings.json` | `book.json` | `/spellbook book ~/notes/spellbook.json` |
-| `recentCommands` | how many recent `!` commands to send, 0 to 20 | `5` | edit the file |
 
 The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override the file.
 
@@ -138,7 +131,7 @@ The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override the fi
 - **`rewind`**: your words erase backwards, then the answer types itself out.
 - **`none`**: the answer just appears.
 
-Prompts, slash commands, settings and shell commands all morph the same way. Motion turns off by itself when omp's
+Prompts and shell commands morph the same way. Motion turns off by itself when omp's
 **Motion** setting (`tui.motion`) is `reduced` or `none`, or when Tern's Reduce Motion is on: no morph, no shimmer or
 pulse on the spell line, and the Tern half's glow stays still. Colour shows in Tern and in terminals omp draws in
 ANSI; when another extension has replaced omp's composer, Spellbook plays the morph as plain text and leaves the spell
@@ -159,7 +152,7 @@ A plain JSON file you can read, edit, copy between machines or keep in your dotf
 ```
 
 What's saved is what you actually sent, edits included: a command as long as it still starts with the same program,
-a prompt as long as it keeps at least half of the words Spellbook wrote (a slash command, the same command). Something
+a prompt as long as it keeps at least half of the words Spellbook wrote. Something
 else typed instead isn't filed under those words. A 0.1 file (`"version": 1`, `"spells"`) reads as commands and is
 saved back as version 2; 0.1 can't read a version 2 file and says so instead of overwriting it. If the file stops
 being valid (bad JSON, or an entry without its `kind`, `words` and text), Spellbook warns you and leaves it alone
@@ -175,11 +168,11 @@ when omp runs headless, `omp -p`).
 bun install
 bun test                      # unit tests
 bun run typecheck
-SPELLBOOK_LIVE=1 bun test test/live.test.ts   # real model through stock omp; runs the commands in your ! shell, casts prompt spells
+SPELLBOOK_LIVE=1 bun test test/live.test.ts   # real model through stock omp: runs the commands in your ! shell, casts prompts, some from a resumed conversation
 ```
 
 The live test starts omp with `bun x @oh-my-pi/pi-coding-agent@18.20.2` unless `SPELLBOOK_OMP` names another command,
-and uses `anthropic/claude-haiku-5-5` unless `SPELLBOOK_MODEL` says otherwise. CI runs the unit tests, a load check in
+and uses `anthropic/claude-haiku-5-5:low` for the `spellbook` role unless `SPELLBOOK_MODEL` says otherwise. CI runs the unit tests, a load check in
 stock omp and a GitHub install on Windows, Linux and macOS; the live test runs there when the repository has an
 `ANTHROPIC_API_KEY` secret.
 

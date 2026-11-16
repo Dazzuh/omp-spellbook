@@ -1,7 +1,7 @@
 {
 	"name": "omp-spellbook",
 	"version": "0.2.0",
-	"description": "omp extension: type `? <description>` in the composer and get the omp prompt, slash command or setting for it; `?!` gets the shell command as `!<command>`.",
+	"description": "omp extension: type `? <description>` in the composer and get the prompt omp's agent needs for it; `?!` gets the shell command as `!<command>`.",
 	"keywords": [
 		"omp",
 		"omp-plugin",
@@ -30,7 +30,7 @@
 	],
 	"omp": {
 		"name": "Spellbook",
-		"description": "Describe what you want after `?` and get the omp prompt (with the skills and magic keywords that fit), slash command or setting; after `?!`, the shell command as `!<command>`.",
+		"description": "Describe what you want after `?` and get the prompt omp's agent needs, written by a model that looks up omp's docs, your skills and settings and your conversation; after `?!`, the shell command as `!<command>`.",
 		"extensions": [
 			"./src/index.ts"
 		]

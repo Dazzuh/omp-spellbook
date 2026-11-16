@@ -73,5 +73,5 @@ jobs:
           ANTHROPIC_API_KEY: ${{ env.LIVE_KEY }}
           SPELLBOOK_LIVE: "1"
           SPELLBOOK_OMP: omp
-          SPELLBOOK_MODEL: ${{ env.MODEL }}
+          SPELLBOOK_MODEL: ${{ env.MODEL }}:low
         run: bun test test/live.test.ts

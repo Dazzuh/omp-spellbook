@@ -14,16 +14,13 @@ import {
 	type SpellLook,
 } from "../src/editor";
 import spellbook from "../src/index";
-import type { CastAnswer, ContextPacket } from "../src/prompt";
-import type { PromptAnswer } from "../src/prompt-spell";
+import type { CastAnswer, PromptAnswer } from "../src/prompt";
 import type { MorphStyle } from "../src/settings";
 import { Spellbook } from "../src/spellbook";
 
 const PROMPT: PromptAnswer = {
-	kind: "prompt",
 	text: "Review this repo with skill://reviewer; split the work across subagents. orchestrate",
 	explain: "Asks omp's agent to review the repo with several subagents.",
-	warnings: [],
 };
 
 /** A fake composer plus a manual clock, so frames can be counted and stepped. */
@@ -36,12 +33,12 @@ function harness(
 		line: undefined as string | undefined,
 		history: [] as string[],
 		notes: [] as string[],
-		asked: [] as ContextPacket[],
+		asked: [] as string[],
 		askedPrompts: [] as string[],
 		timers: [] as (() => void)[],
 	};
 	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
-	const answer: CastAnswer = options.answer ?? { command: "ls -la", explain: "Lists every file here.", destructive: false };
+	const answer: CastAnswer = options.answer ?? { text: "ls -la", explain: "Lists every file here.", destructive: false };
 	const book = new Spellbook({
 		ui: {
 			getText: () => state.text,
@@ -57,18 +54,11 @@ function harness(
 			},
 		},
 		display,
-		settings: () => ({ style: options.style ?? "diff", bookPath: "book.json", recentCommands: 5 }),
+		settings: () => ({ style: options.style ?? "diff", bookPath: "book.json" }),
 		bookFile: () => path.join(dir, "book.json"),
 		reduceMotion: () => options.reduceMotion === true || display.ternReduceMotion,
-		context: () => ({
-			cwd: dir,
-			os: "Test OS",
-			shell: { platform: "linux", shell: "/bin/bash", family: "bash", notes: [] },
-			sshHosts: [],
-			recentCommands: [],
-		}),
-		ask: async packet => {
-			state.asked.push(packet);
+		ask: async description => {
+			state.asked.push(description);
 			await options.gate;
 			return { answer, model: "test/model" };
 		},
@@ -114,13 +104,24 @@ describe("?! and ?!!", () => {
 		expect(h.state.history.length).toBeGreaterThan(10);
 		expect(h.state.line).toContain("Lists every file here.");
 		expect(h.display.frame).toBeUndefined();
-		expect(h.state.asked[0]!.description).toBe("list files here");
+		expect(h.state.asked).toEqual(["list files here"]);
 	});
 
 	test("?!! <desc> ends as !!<command>", async () => {
 		expect(h.submit("?!! list files here")).toEqual({ handled: true });
 		await h.flush();
 		expect(h.state.text).toBe("!!ls -la");
+	});
+
+	test("the command lands exactly as the model's text field: nothing stripped or added but the sigil", async () => {
+		const text = "$ ls `pwd` | head -n 3 ";
+		h = harness({ answer: { text, explain: "Lists.", destructive: false }, reduceMotion: true });
+		h.submit("?! list files here");
+		await h.flush();
+		expect(h.state.text).toBe(`!${text}`);
+		h.submit("?!! list files here");
+		await h.flush();
+		expect(h.state.text).toBe(`!!${text}`);
 	});
 
 	test("ordinary prompts and ! lines pass through to omp", () => {
@@ -172,7 +173,7 @@ describe("?! and ?!!", () => {
 
 describe("destructive commands", () => {
 	test("the plain-words line carries a warning (local check, even if the model says safe)", async () => {
-		h = harness({ answer: { command: "rm -rf build", explain: "Deletes the build folder.", destructive: false } });
+		h = harness({ answer: { text: "rm -rf build", explain: "Deletes the build folder.", destructive: false } });
 		h.submit("?! delete the build folder");
 		await h.flush();
 		expect(h.state.text).toBe("!rm -rf build");
@@ -181,7 +182,7 @@ describe("destructive commands", () => {
 	});
 
 	test("the model's own destructive flag also warns", async () => {
-		h = harness({ answer: { command: "my-tool --purge", explain: "Purges the cache.", destructive: true } });
+		h = harness({ answer: { text: "my-tool --purge", explain: "Purges the cache.", destructive: true } });
 		h.submit("?! purge the tool cache");
 		await h.flush();
 		expect(h.state.line).toContain("⚠ Destructive");
@@ -570,8 +571,9 @@ describe("/spellbook cast", () => {
 				notify: (message: string) => notes.push(message),
 			},
 			// No model: the cast stops at the model call, after the spell line is in the composer.
-			models: { resolve: () => undefined, current: () => undefined },
-			sessionManager: { getBranch: () => [] },
+			modelRegistry: { getAvailable: () => [] },
+			model: undefined,
+			sessionManager: { getSessionFile: () => undefined },
 		};
 		await commands.get("spellbook")!.handler("cast list files here", ctx);
 		expect(texts[0]).toBe("?! list files here");
@@ -615,11 +617,13 @@ describe("prompt spells", () => {
 		expect(h.state.history).toEqual(["? review this repo", PROMPT.text]);
 	});
 
-	test("the line under the composer says what Spellbook changed", async () => {
-		h = harness({ prompt: { ...PROMPT, warnings: ["skill nope is not installed"] } });
+	test("the prompt lands exactly as the model's text field, and its explanation is the line under it", async () => {
+		const text = "  /compact? no: `orchestrate` a review of src/\n\nthen stop. ";
+		h = harness({ prompt: { text, explain: "Asks for a review." }, reduceMotion: true });
 		h.submit("? review this repo");
 		await h.flush();
-		expect(h.state.line).toContain("<warning>⚠ skill nope is not installed.</warning>");
+		expect(h.state.text).toBe(text);
+		expect(h.state.line).toBe("<accent>✦</accent> Asks for a review.");
 	});
 
 	test("Enter mid-morph finishes the prompt instead of sending half of it", async () => {
@@ -684,26 +688,12 @@ describe("prompt spells", () => {
 		expect(fs.existsSync(path.join(h.dir, "book.json"))).toBe(false);
 	});
 
-	test("slash commands and !omp config set lines are saved when sent, and land again from Tab", async () => {
-		h = harness({ prompt: { kind: "command", text: "/compact", explain: "", warnings: [] } });
-		h.submit("? compact the conversation");
+	test("a ! line sent while a prompt spell waits saves nothing", async () => {
+		h = harness();
+		h.submit("? review this repo");
 		await h.flush();
-		expect(h.state.text).toBe("/compact");
-		expect(h.state.line).toContain("An omp command; read it before sending.");
-		send("/compact");
-
-		h.book.deps.askPrompt = async () => ({
-			answer: { kind: "setting", text: "!omp config set tui.motion false", explain: "", warnings: [] },
-			model: "test/model",
-		});
-		h.submit("? stop the animations");
-		await h.flush();
-		expect(h.state.text).toBe("!omp config set tui.motion false");
-		send("!omp config set tui.motion false");
-		expect(readBook(path.join(h.dir, "book.json")).entries).toMatchObject([
-			{ kind: "prompt", words: "compact the conversation", prompt: "/compact" },
-			{ kind: "prompt", words: "stop the animations", prompt: "!omp config set tui.motion false" },
-		]);
+		send("!ls");
+		expect(fs.existsSync(path.join(h.dir, "book.json"))).toBe(false);
 	});
 
 	test("/spellbook prompt casts its words as a ? spell", async () => {
@@ -731,8 +721,9 @@ describe("prompt spells", () => {
 				setWidget() {},
 				notify: (message: string) => notes.push(message),
 			},
-			models: { resolve: () => undefined, current: () => undefined },
-			sessionManager: { getBranch: () => [] },
+			modelRegistry: { getAvailable: () => [] },
+			model: undefined,
+			sessionManager: { getSessionFile: () => undefined },
 		};
 		await commands.get("spellbook")!.handler("prompt review this repo", ctx);
 		expect(texts[0]).toBe("? review this repo");

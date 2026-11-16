@@ -1,18 +1,22 @@
-import * as os from "node:os";
-import { completeSimple } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { getAgentDir, settings as ompSettings, theme } from "@oh-my-pi/pi-coding-agent";
+import {
+	AgentRegistry,
+	createAgentSession,
+	getAgentDir,
+	SessionManager,
+	Settings,
+	theme,
+} from "@oh-my-pi/pi-coding-agent";
+import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { isNativeRendering, motionEffectsEnabled } from "@oh-my-pi/pi-tui";
 import { wrapAutocomplete } from "./autocomplete";
 import { installEditorHooks, type MorphDisplay, type SpellLook } from "./editor";
-import { pickModel, replyText } from "./model";
-import { buildOmpMap, type OmpMap, renderMap } from "./omp-map";
+import { type HelperSdk, runHelper } from "./helper";
+import { pickModel } from "./model";
 import { parseCast } from "./parse";
-import { describeOs, detectShell, liveProbe, readSshHosts, type ShellInfo } from "./platform";
-import { buildSystemPrompt, buildUserMessage, parseAnswer } from "./prompt";
-import { castPrompt, PROMPT_MAX_TOKENS, PROMPT_REQUEST_BUDGET } from "./prompt-spell";
-import { readOmpCatalogue } from "./catalogue";
+import { describeOs, detectShell, liveProbe, type ShellInfo } from "./platform";
+import { type LookupPlaces, parsePromptReply, parseShellReply, promptSystemPrompt, shellSystemPrompt } from "./prompt";
 import {
 	MORPH_STYLES,
 	parseStyle,
@@ -24,8 +28,12 @@ import {
 } from "./settings";
 import { Spellbook } from "./spellbook";
 
-/** Output budget for one answer: a command line and a sentence. */
-const MAX_TOKENS = 400;
+const SDK: HelperSdk = {
+	createAgentSession,
+	inMemorySessionManager: cwd => SessionManager.inMemory(cwd),
+	// Each cast gets its own registry, so its agent id never meets the user's session's.
+	agentRegistry: () => new AgentRegistry(),
+};
 
 function paint(color: string, text: string): string {
 	try {
@@ -53,28 +61,13 @@ function currentShell(): ShellInfo {
 	let shellPath: string | undefined;
 	let ompShell: string | undefined;
 	try {
-		const value = lookup("shellPath")?.get(ompSettings);
+		const value = lookup("shellPath")?.get(Settings.instance);
 		if (typeof value === "string" && value) shellPath = value;
 	} catch {}
 	try {
-		ompShell = ompSettings.getShellConfig().shell;
+		ompShell = Settings.instance.getShellConfig().shell;
 	} catch {}
 	return detectShell(liveProbe({ shellPath, ompShell }));
-}
-
-/** The last `count` commands run with `!`/`!!` on this session's branch. */
-function recentBashCommands(ctx: ExtensionContext, count: number): string[] {
-	if (count <= 0) return [];
-	const commands: string[] = [];
-	for (const entry of ctx.sessionManager.getBranch() as ReadonlyArray<{
-		type: string;
-		message?: { role?: string; command?: unknown };
-	}>) {
-		if (entry.type === "message" && entry.message?.role === "bashExecution") {
-			if (typeof entry.message.command === "string") commands.push(entry.message.command);
-		}
-	}
-	return commands.slice(-count);
 }
 
 export default function spellbook(pi: ExtensionAPI): void {
@@ -95,35 +88,43 @@ export default function spellbook(pi: ExtensionAPI): void {
 	};
 	/** The context of the latest event; ctx objects differ per event, the Spellbook state must not. */
 	let live: ExtensionContext | undefined;
-	/** The plain-words map of omp, built once per session from the catalogue (reset on session_start). */
-	let mapCache: Promise<OmpMap> | undefined;
-	/** The map the latest prompt cast used, for the headless report. */
-	let lastMap: OmpMap | undefined;
 	const ctxNow = (): ExtensionContext => {
 		if (!live) throw new Error("Spellbook used before session start");
 		return live;
 	};
-	/** One completion on the Spellbook model (role `spellbook`, else `smol`, else the session model). */
-	const complete = async (
-		request: { system: string; user: string },
-		maxTokens: number,
-		signal: AbortSignal,
-	): Promise<{ text: string; model: string }> => {
-		const ctx = ctxNow();
-		const picked = pickModel(ctx.models);
-		if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
-		const model = picked.model;
-		const apiKey = await ctx.modelRegistry.getApiKey(model);
-		if (!apiKey) throw new Error(`no credential for ${model.provider}; log in with /login`);
-		const message = await completeSimple(
-			model,
-			{
-				systemPrompt: [request.system],
-				messages: [{ role: "user", content: request.user, timestamp: Date.now() }],
+	/** The cast model as omp's roles configure it: role `spellbook`, else `smol`, else the session's model and thinking level. */
+	const castModel = (ctx: ExtensionContext) =>
+		pickModel({
+			role: roles => {
+				try {
+					return resolveRoleSelection(roles, Settings.instance, ctx.modelRegistry.getAvailable());
+				} catch {
+					return undefined;
+				}
 			},
-			{ apiKey, maxTokens, disableReasoning: true, temperature: 0, signal },
+			session: () => (ctx.model ? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() } : undefined),
+		});
+	/** Where the cast model can look things up: this session's log and the project. */
+	const places = (ctx: ExtensionContext): LookupPlaces => ({ sessionLog: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd });
+	/** One cast: a read-only helper session on the cast model answers `description` under `system`. */
+	const cast = async (system: string, description: string, signal: AbortSignal): Promise<{ reply: string; model: string }> => {
+		const ctx = ctxNow();
+		const picked = castModel(ctx);
+		if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
+		const reply = await runHelper(
+			{
+				cwd: ctx.cwd,
+				model: picked.model,
+				thinkingLevel: picked.thinkingLevel,
+				settings: Settings.instance,
+				modelRegistry: ctx.modelRegistry,
+				system,
+				description,
+				signal,
+			},
+			SDK,
 		);
-		return { text: replyText(message), model: `${model.provider}/${model.id}` };
+		return { reply, model: `${picked.model.provider}/${picked.model.id}` };
 	};
 
 	const book = new Spellbook({
@@ -138,43 +139,16 @@ export default function spellbook(pi: ExtensionAPI): void {
 		settings: () => current.settings,
 		bookFile: () => resolveBookPath(location, current.settings.bookPath),
 		reduceMotion,
-		context: () => ({
-			cwd: ctxNow().cwd,
-			os: describeOs(),
-			shell: currentShell(),
-			sshHosts: readSshHosts(os.homedir()),
-			recentCommands: recentBashCommands(ctxNow(), current.settings.recentCommands),
-		}),
-		ask: async (packet, signal) => {
-			const { text, model } = await complete(
-				{ system: buildSystemPrompt(packet.shell), user: buildUserMessage(packet) },
-				MAX_TOKENS,
-				signal,
-			);
-			const answer = parseAnswer(text);
-			if (!answer) throw new Error(`${model} gave no command`);
+		ask: async (description, signal) => {
+			const { reply, model } = await cast(shellSystemPrompt(places(ctxNow()), currentShell(), describeOs()), description, signal);
+			const answer = parseShellReply(reply);
+			if (!answer) throw new Error(`${model} gave no command: ${reply}`);
 			return { answer, model };
 		},
 		askPrompt: async (description, signal) => {
-			let model = "";
-			const catalogue = await readOmpCatalogue(pi);
-			const pending = (mapCache ??= buildOmpMap(catalogue));
-			const map = await pending.catch(error => {
-				if (mapCache === pending) mapCache = undefined;
-				throw error;
-			});
-			lastMap = map;
-			const answer = await castPrompt(
-				description,
-				catalogue,
-				map,
-				async request => {
-					const reply = await complete(request, PROMPT_MAX_TOKENS, signal);
-					model = reply.model;
-					return reply.text;
-				},
-				id => lookup(id) !== undefined,
-			);
+			const { reply, model } = await cast(promptSystemPrompt(places(ctxNow())), description, signal);
+			const answer = parsePromptReply(reply);
+			if (!answer) throw new Error(`${model} gave no prompt: ${reply}`);
 			return { answer, model };
 		},
 		setTimeout: (fn, ms) => ctxNow().setTimeout(fn, ms),
@@ -185,7 +159,6 @@ export default function spellbook(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		book.dispose();
 		live = ctx;
-		mapCache = undefined;
 		if (!ctx.hasUI) return;
 		for (const problem of current.problems) ctx.ui.notify(`Spellbook settings: ${problem}`, "warning");
 		// Re-added on every session_start (/new, resume); wrapAutocomplete skips a provider it already wrapped.
@@ -210,8 +183,6 @@ export default function spellbook(pi: ExtensionAPI): void {
 
 	pi.on("user_bash", (event, ctx) => {
 		live = ctx;
-		// The cached map carries each setting's current value; a `config set` changes it, so the next cast rebuilds.
-		if (/^\s*omp\s+config\s+set\b/.test(event.command)) mapCache = undefined;
 		book.onUserBash(event.command);
 		return undefined;
 	});
@@ -260,28 +231,12 @@ export default function spellbook(pi: ExtensionAPI): void {
 					say(lines.length ? lines.join("\n") : "No saved spells match.");
 					return;
 				}
-				case "cast": {
-					const request = parseCast(`?! ${arg}`);
-					if (request?.kind !== "shell") {
-						say("Usage: /spellbook cast <description>", "warning");
-						return;
-					}
-					if (ctx.hasUI) {
-						await book.cast(request);
-						return;
-					}
-					const spells = book.find(request.description, 5).map(m => ({ words: m.spell.words, command: m.spell.command }));
-					const result = await book.deps.ask(
-						{ ...book.deps.context(), description: request.description, spells },
-						AbortSignal.timeout(60_000),
-					);
-					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model })}\n`);
-					return;
-				}
+				case "cast":
 				case "prompt": {
-					const request = parseCast(`? ${arg}`);
-					if (request?.kind !== "prompt") {
-						say("Usage: /spellbook prompt <description>", "warning");
+					const kind = sub.toLowerCase() === "cast" ? "shell" : "prompt";
+					const request = parseCast(`${kind === "shell" ? "?!" : "?"} ${arg}`);
+					if (request?.kind !== kind) {
+						say(`Usage: /spellbook ${sub.toLowerCase()} <description>`, "warning");
 						return;
 					}
 					if (ctx.hasUI) {
@@ -289,20 +244,26 @@ export default function spellbook(pi: ExtensionAPI): void {
 						return;
 					}
 					const started = Date.now();
-					const result = await book.deps.askPrompt(request.description, AbortSignal.timeout(90_000));
+					const signal = AbortSignal.timeout(300_000);
+					const result =
+						kind === "shell"
+							? await book.deps.ask(request.description, signal)
+							: await book.deps.askPrompt(request.description, signal);
 					const ms = Date.now() - started;
-					const mapBytes = lastMap ? Buffer.byteLength(renderMap(lastMap, PROMPT_REQUEST_BUDGET)) : 0;
-					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model, ms, mapBytes })}\n`);
+					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model, ms })}\n`);
 					return;
 				}
 				default: {
-					const picked = pickModel(ctx.models);
+					const picked = castModel(ctx);
+					const model = picked
+						? `${picked.model.provider}/${picked.model.id}${picked.thinkingLevel ? `:${picked.thinkingLevel}` : ""} (via ${picked.via})`
+						: "none";
 					say(
 						[
 							`Style: ${current.settings.style}   (/spellbook style diff|decode|rewind|none)`,
 							`File: ${resolveBookPath(location, current.settings.bookPath)}`,
 							`Settings: ${location.file}`,
-							`Model: ${picked ? `${picked.model.provider}/${picked.model.id} (via ${picked.via})` : "none"}`,
+							`Model: ${model}`,
 							`Shell: ${currentShell().shell}`,
 							"Type `? <description>` for an omp prompt, `?! <description>` for a command (`?!!` for `!!`); Tab on a `?` or `?!` line lists saved ones.",
 						].join("\n"),

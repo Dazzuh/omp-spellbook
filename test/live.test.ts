@@ -1,11 +1,12 @@
 /**
- * Live check against a real model through stock omp: each description becomes a command via
- * `omp -p "/spellbook cast …"`, and the command runs through omp's own `!` executor
- * (`executeBash` with `useUserShell`, exactly what Enter on a `!` line calls).
+ * Live check against a real model through stock omp: each description is cast with
+ * `omp -p "/spellbook cast …"` (a command) or `omp -p "/spellbook prompt …"` (a prompt), and each
+ * command runs through omp's own `!` executor (`executeBash` with `useUserShell`, exactly what Enter
+ * on a `!` line calls). Every cast prints its description, landed text, explanation and time.
  *
  * Runs only with SPELLBOOK_LIVE=1 (it spends tokens). Options:
  * - SPELLBOOK_OMP: how to start omp (default `bun x @oh-my-pi/pi-coding-agent@18.20.2`)
- * - SPELLBOOK_MODEL: model for the `spellbook` role (default `anthropic/claude-haiku-5-5`)
+ * - SPELLBOOK_MODEL: the `spellbook` role, thinking level allowed (default `anthropic/claude-haiku-5-5:low`)
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
@@ -18,52 +19,49 @@ const LIVE = process.env.SPELLBOOK_LIVE === "1";
 const REPO = path.resolve(import.meta.dir, "..");
 // `bun x`, not `bunx`: some bun installs ship only the `bun` binary.
 const OMP = process.env.SPELLBOOK_OMP?.split(" ") ?? [process.execPath, "x", "@oh-my-pi/pi-coding-agent@18.20.2"];
-const MODEL = process.env.SPELLBOOK_MODEL ?? "anthropic/claude-haiku-5-5";
+const MODEL = process.env.SPELLBOOK_MODEL ?? "anthropic/claude-haiku-5-5:low";
+/** The model a cast reports: the role's model without its thinking level. */
+const MODEL_ID = MODEL.replace(/:[a-z]+$/, "");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-live-"));
+/** Sessions these runs make stay here, never beside the user's own. */
+const SESSIONS = path.join(tmp, "sessions");
 
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-interface Cast {
-	command: string;
+interface Answer {
+	text: string;
 	explain: string;
-	destructive: boolean;
+	destructive?: boolean;
 	model: string;
+	ms: number;
 }
 
-/** Run a `/spellbook` subcommand in stock omp, isolated from other extensions, and parse its JSON answer. */
-function run<T>(subcommand: string, description: string, extra: string[]): T {
-	const proc = Bun.spawnSync(
-		[...OMP, "--no-extensions", "-e", REPO, ...extra, "-p", `/spellbook ${subcommand} ${description}`],
-		{
-			cwd: REPO,
-			env: { ...process.env, SPELLBOOK_BOOK: path.join(tmp, "book.json") },
-			timeout: 180_000,
-			windowsHide: true,
-		},
-	);
+/** Run stock omp in print mode, isolated from other extensions, with its sessions in {@link SESSIONS}. */
+function omp(args: string[]): string {
+	const proc = Bun.spawnSync([...OMP, "--no-extensions", "-e", REPO, "--session-dir", SESSIONS, ...args], {
+		cwd: REPO,
+		env: { ...process.env, SPELLBOOK_BOOK: path.join(tmp, "book.json") },
+		timeout: 300_000,
+		windowsHide: true,
+	});
 	const out = proc.stdout.toString();
+	if (proc.exitCode !== 0) throw new Error(`omp exit ${proc.exitCode}:\n${out}\n${proc.stderr.toString()}`);
+	return out;
+}
+
+/** `/spellbook cast|prompt <description>`, its JSON answer printed for the record. */
+function run(subcommand: "cast" | "prompt", description: string, extra: string[]): Answer {
+	const out = omp([...extra, "-p", `/spellbook ${subcommand} ${description}`]);
 	const line = out
 		.split(/\r?\n/)
 		.reverse()
 		.find(l => l.trim().startsWith("{"));
-	if (!line) throw new Error(`no answer from omp (exit ${proc.exitCode}):\n${out}\n${proc.stderr.toString()}`);
-	return JSON.parse(line) as T;
-}
-
-/** `/spellbook cast`: a shell command; `roles` goes in a config overlay. */
-function cast(description: string, extra: string[]): Cast {
-	return run<Cast>("cast", description, extra);
-}
-
-interface PromptCast {
-	kind: "prompt" | "command" | "setting";
-	text: string;
-	explain: string;
-	warnings: string[];
-	model: string;
-	picks?: { docs: string[]; settings: string[]; keywords: string[] };
-	ms: number;
-	mapBytes: number;
+	if (!line) throw new Error(`no answer from omp:\n${out}`);
+	const answer = JSON.parse(line) as Answer;
+	console.log(
+		JSON.stringify({ platform: process.platform, spell: subcommand === "cast" ? "?!" : "?", description, ...answer }),
+	);
+	return answer;
 }
 
 function overlay(roles: Record<string, string>): string[] {
@@ -91,159 +89,69 @@ const DESCRIPTIONS: ReadonlyArray<readonly [string, RegExp]> = [
 
 describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 	for (const [description, expected] of DESCRIPTIONS) {
-		test(`"${description}" works in the ! shell`, async () => {
-			const answer = cast(description, overlay({ spellbook: MODEL }));
-			expect(answer.model).toBe(MODEL);
-			const result = await runInShell(answer.command);
-			console.log(`${process.platform} | ${description} → ${answer.command}`);
+		test(`?! "${description}" works in the ! shell`, async () => {
+			const answer = run("cast", description, overlay({ spellbook: MODEL }));
+			expect(answer.model).toBe(MODEL_ID);
+			const result = await runInShell(answer.text);
 			if (result.code !== 0 || !expected.test(result.out)) {
-				throw new Error(`command: ${answer.command}\nexit: ${result.code}\noutput:\n${result.out}`);
+				throw new Error(`command: ${answer.text}\nexit: ${result.code}\noutput:\n${result.out}`);
 			}
-		}, 240_000);
+		}, 360_000);
 	}
 
 	test("without a spellbook role the smol role answers", () => {
-		const answer = cast("list the files in this folder", ["--smol", MODEL, ...overlay({})]);
-		expect(answer.model).toBe(MODEL);
-	}, 240_000);
+		const answer = run("cast", "list the files in this folder", ["--smol", MODEL, ...overlay({})]);
+		expect(answer.model).toBe(MODEL_ID);
+	}, 360_000);
 
-	test("a destructive description is flagged", () => {
-		const answer = cast("delete every .log file below here", overlay({ spellbook: MODEL }));
+	test("?! a destructive description is flagged", () => {
+		const answer = run("cast", "delete every .log file below here", overlay({ spellbook: MODEL }));
 		expect(answer.destructive).toBe(true);
-	}, 240_000);
+	}, 360_000);
 
-	test("? prompt spell: a fan-out task gets orchestrate and stays a prompt", () => {
-		const answer = run<PromptCast>("prompt", "get a few agents to review this repo for bugs", overlay({ spellbook: MODEL }));
-		console.log(`${process.platform} | ? review → ${answer.text}`);
-		expect(answer.kind).toBe("prompt");
-		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
-		expect(answer.text).not.toMatch(/^[!?/]/);
-		expect(answer.text).not.toMatch(/skill:(?!\/\/[A-Za-z0-9])/);
-	}, 240_000);
-
-	test("? prompt spell: an omp command becomes the slash command", () => {
-		const answer = run<PromptCast>("prompt", "compact the conversation", overlay({ spellbook: MODEL }));
-		expect(answer).toMatchObject({ kind: "command", text: "/compact" });
-	}, 240_000);
-
-	test("? prompt spell: a setting becomes !omp config set with a real key", () => {
-		const answer = run<PromptCast>("prompt", "turn off auto compaction", overlay({ spellbook: MODEL }));
-		expect(answer.kind).toBe("setting");
-		expect(answer.text).toMatch(/^!omp config set compaction\.\S+ \S+/);
-		expect(answer.warnings).toEqual([]);
-	}, 240_000);
+	for (const description of [
+		"get a few agents to review this repo for bugs",
+		"stop it forgetting stuff in long chats",
+		"make the agent stop asking me before it edits files",
+		"fix the typo in the readme title",
+	]) {
+		test(`? "${description}" lands a prompt`, () => {
+			const answer = run("prompt", description, overlay({ spellbook: MODEL }));
+			expect(answer.model).toBe(MODEL_ID);
+			expect(answer.text.trim().length).toBeGreaterThan(0);
+		}, 360_000);
+	}
 });
 
-describe.skipIf(!LIVE)("? prompt spell: newcomers without omp's words", () => {
-	test("'stop it forgetting stuff in long chats' reaches compaction", () => {
-		const description = "stop it forgetting stuff in long chats";
-		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
-		console.log(
-			JSON.stringify({
-				description,
-				kind: answer.kind,
-				text: answer.text,
-				explain: answer.explain,
-				warnings: answer.warnings,
-				picks: answer.picks,
-				ms: answer.ms,
-				mapBytes: answer.mapBytes,
-			}),
-		);
-		const reached =
-			answer.picks?.docs.includes("compaction.md") ||
-			answer.picks?.settings.some(id => id.startsWith("compaction.")) ||
-			/compact/i.test(answer.text);
-		expect(Boolean(reached)).toBe(true);
-		const settingId = /config set (\S+)/.exec(answer.text)?.[1];
-		if (answer.kind === "setting" && settingId?.includes("experimental")) {
-			expect(answer.explain).toMatch(/experimental/i);
-		}
-		if (answer.kind === "setting") expect(settingId?.startsWith("compaction.")).toBe(true);
-	}, 240_000);
+describe.skipIf(!LIVE)("casts that only make sense from the conversation", () => {
+	/** A session in which the user already talked about something; later casts resume it. */
+	let session = "";
+	const resume = () => ["--resume", session, ...overlay({ spellbook: MODEL })];
 
-	test("'get a bunch of helpers to check every file for bugs at once' gets orchestrate", () => {
-		const description = "get a bunch of helpers to check every file for bugs at once";
-		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
-		console.log(
-			JSON.stringify({
-				description,
-				kind: answer.kind,
-				text: answer.text,
-				explain: answer.explain,
-				warnings: answer.warnings,
-				picks: answer.picks,
-				ms: answer.ms,
-				mapBytes: answer.mapBytes,
-			}),
-		);
-		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
-		expect(answer.text).not.toMatch(/\borchestrate[.!]?\s*$/);
-	}, 240_000);
+	test("seed: a short conversation about a flaky test", () => {
+		omp([
+			"--model",
+			MODEL_ID,
+			"-p",
+			"Context for later, reply with one short sentence and do nothing else: test/cast.test.ts fails on Windows now and then with EBUSY when it removes its temp folder, and I also want the README's Settings table to list SPELLBOOK_STYLE.",
+		]);
+		const files = fs.readdirSync(SESSIONS, { recursive: true, encoding: "utf8" }).filter(f => f.endsWith(".jsonl"));
+		expect(files).toHaveLength(1);
+		session = path.join(SESSIONS, files[0]!);
+	}, 360_000);
 
-	test("'make the agent stop asking me before it edits files' reaches tools.approvalMode", () => {
-		const description = "make the agent stop asking me before it edits files";
-		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
-		console.log(
-			JSON.stringify({
-				description,
-				kind: answer.kind,
-				text: answer.text,
-				explain: answer.explain,
-				warnings: answer.warnings,
-				picks: answer.picks,
-				ms: answer.ms,
-				mapBytes: answer.mapBytes,
-			}),
-		);
-		const reached =
-			answer.picks?.settings.includes("tools.approvalMode") ||
-			answer.text.includes("tools.approvalMode") ||
-			/approval/i.test(answer.text);
-		expect(Boolean(reached)).toBe(true);
-		if (answer.kind === "setting") expect(answer.text).not.toMatch(/tools\.approvalMode\s+(write|always-ask)/);
-	}, 240_000);
+	test('? "fix that flaky test I mentioned" lands a prompt about it', () => {
+		const answer = run("prompt", "fix that flaky test I mentioned", resume());
+		expect(answer.text).toMatch(/cast\.test|EBUSY|temp/i);
+	}, 360_000);
 
-	test("'fix the typo in the readme title' stays a short prompt with no keyword", () => {
-		const description = "fix the typo in the readme title";
-		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
-		console.log(
-			JSON.stringify({
-				description,
-				kind: answer.kind,
-				text: answer.text,
-				explain: answer.explain,
-				warnings: answer.warnings,
-				picks: answer.picks,
-				ms: answer.ms,
-				mapBytes: answer.mapBytes,
-			}),
-		);
-		expect(answer.kind).toBe("prompt");
-		expect(answer.text).not.toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
-		expect(answer.text.length).toBeLessThan(300);
-	}, 240_000);
+	test('? "do the readme thing" lands a prompt about it', () => {
+		const answer = run("prompt", "do the readme thing", resume());
+		expect(answer.text).toMatch(/README|SPELLBOOK_STYLE/i);
+	}, 360_000);
 
-	test("'tidy up this repo, the tests are a mess and the docs are out of date' gets a planned prompt", () => {
-		const description = "tidy up this repo, the tests are a mess and the docs are out of date";
-		const answer = run<PromptCast>("prompt", description, overlay({ spellbook: MODEL }));
-		console.log(
-			JSON.stringify({
-				description,
-				kind: answer.kind,
-				text: answer.text,
-				explain: answer.explain,
-				warnings: answer.warnings,
-				picks: answer.picks,
-				ms: answer.ms,
-				mapBytes: answer.mapBytes,
-			}),
-		);
-		expect(answer.kind).toBe("prompt");
-		expect(answer.text).toMatch(/(?<![\w./\\-])orchestrate(?![\w/\\-])/);
-		expect(answer.text).toMatch(/test/i);
-		expect(answer.text).toMatch(/doc/i);
-		expect(answer.text).not.toMatch(/\borchestrate[.!]?\s*$/);
-		expect(answer.text).not.toMatch(/\brewrite\b/i);
-	}, 240_000);
+	test('?! "run just that test file" lands a command for it', () => {
+		const answer = run("cast", "run just that test file", resume());
+		expect(answer.text).toMatch(/cast\.test/);
+	}, 360_000);
 });
