@@ -9,7 +9,7 @@ export interface MorphDisplay {
 	/** Tern asked for reduced motion, read from the editor's last native describe. */
 	ternReduceMotion: boolean;
 	/** The live editor carrying Spellbook's hooks, once installed. */
-	editor: { invalidate(): void } | undefined;
+	editor: { invalidate(): void; addToHistory?(text: string): void } | undefined;
 	/** The composer text of the cast waiting on the model; that line pulses and Tern's glow breathes. */
 	casting: string | undefined;
 	/** Ask omp for a new frame, once the editor is installed. */
@@ -86,6 +86,8 @@ export interface HookableEditor {
 	focused?: boolean;
 	/** Set by omp's input controller after the editor is built; Spellbook listens alongside it. */
 	onChange?: (text: string) => void;
+	/** omp's composer history (Up/Down and `history.db`); public on omp's `Editor`. */
+	addToHistory?(text: string): void;
 }
 
 /** How the spell line is drawn in a plain terminal and whether it may move. */

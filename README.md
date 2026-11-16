@@ -17,6 +17,8 @@ playing only finishes it.
   model's own flag). It goes away once you clear the composer or replace what landed.
 - Every prompt and command you send after a spell is saved in your **spellbook** under your own words. Next time,
   type `?` (prompts) or `?!` (commands) and a few of those words and press **Tab**: pick the saved one, no model call.
+- Spell lines you press Enter on go into omp's composer history with everything else you send, in the order you sent
+  them: **Up** brings back `? <description>` and Enter casts it again. A result you clear without sending stays out.
 
 Works on Windows, Linux and macOS, with stock omp 18.20.2 or later, in any terminal; the morph is drawn in colour in
 Tern and in omp's ANSI renderer alike.

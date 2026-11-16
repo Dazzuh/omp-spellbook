@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- `?`, `?!` and `?!!` lines you press Enter on now go into omp's composer history (Up/Down, and omp's saved prompt
+  history), in the order you sent them alongside your prompts and `!` commands. omp never recorded a line an
+  extension took. Only what you pressed Enter on is recorded: a landed result you clear without sending stays out,
+  and Enter that only finishes a morph records nothing. The Tern half is unchanged.
+
 ## 0.2.0
 
 - **Prompt spells.** `? <description>` writes the prompt omp's agent needs for it, using omp's docs, your skills and

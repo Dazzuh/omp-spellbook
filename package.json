@@ -1,6 +1,6 @@
 {
 	"name": "omp-spellbook",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "omp extension: type `? <description>` in the composer and get the prompt omp's agent needs for it; `?!` gets the shell command as `!<command>`.",
 	"keywords": [
 		"omp",
