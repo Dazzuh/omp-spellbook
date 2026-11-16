@@ -1,9 +1,33 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0
 
+- **The `?` writer gets your rules.** Each `?` cast reads omp's rules at that moment and gives the model every rule
+  omp's agent always works under (your `RULES.md`, the project's `.omp/RULES.md`, other always-apply rules) word for
+  word, after one line saying these are the rules the receiving agent works under. Rules that fire mid-turn (stream
+  conditions, ast-grep conditions, judge questions) and rules scoped to other agents stay out. With no such rules the
+  prompt is unchanged. `?!` and `?!!` never get rules.
+- **Every cast is logged.** Each cast (`?`, `?!`, `?!!`, and `/spellbook cast|prompt` headless) is saved as an omp
+  session file in `<omp agent dir>/spellbook/casts`: the full system prompt, model and thinking level, every lookup
+  and its result, the reply, the answer and what landed, token use and cost, how long each step took, and the outcome
+  (landed, superseded, aborted, model error, unparseable reply). Failed and abandoned casts are logged too. The folder
+  is Spellbook's own, so casts never show in `/resume`, and `omp --continue` never picks one. Nothing is pruned.
+- **`/spellbook` is one panel.** It opens over the session, stays until Esc (also while the agent works) and never
+  enters the conversation. Spells: search, Enter lands a spell (a command after `!`, or `!!` when the composer holds
+  `?!!`), Ctrl+X then Enter (or Ctrl+X again) forgets one, uses and last use
+  shown. Now: each setting, the model `model` resolves to, the shell, the cast log folder, and where to change
+  settings. Recent casts: read from the logs, with model, time, outcome, each lookup and the log's path. In Tern it is
+  a native sheet you can click. `/spellbook list [words]` and `/spellbook <words>` open it on Spells. Every toast is
+  now one line; a failed cast's toast points at Recent casts, where the whole error is.
+- **Fuzzy search for saved spells.** The Tab menu and the panel share one matcher, omp's own `fuzzyRank`: words in
+  any order, partial words, and one typo (two letters swapped, `gti log`). A match in the spell's words, typo or not,
+  ranks above one that needs its command or prompt; equal matches sort by uses, then last use.
+- **README rewritten** in plain words, with how it works in one section at the end.
+- **A cast no longer tears down your background agents.** The cast's helper session was a top-level session to omp,
+  and disposing one disposes omp's process-wide agent lifecycle, which holds the session's adopted and parked
+  subagents. It is now a sub-agent session, so ending a cast leaves them alone.
 - **Settings on the Configure page.** `style` and `bookPath` are declared as omp plugin settings, so they show on
-  Spellbook's `/plugins` Configure page and in `omp plugin config list omp-spellbook`. They are read on every use,
+  Spellbook's Configure page (`/settings` → Plugins → Installed → omp-spellbook) and in `omp plugin config list omp-spellbook`. They are read on every use,
   so a change applies to the next cast without a restart. `<omp agent dir>/spellbook/settings.json` is no longer
   read, and `/spellbook style` and `/spellbook book` are gone. `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` still override,
   and a relative `bookPath` still sits in `<omp agent dir>/spellbook`.
