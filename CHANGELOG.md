@@ -17,8 +17,8 @@
   `?!!`), Ctrl+X then Enter (or Ctrl+X again) forgets one, uses and last use
   shown. Now: each setting, the model `model` resolves to, the shell, the cast log folder, and where to change
   settings. Recent casts: read from the logs, with model, time, outcome, each lookup and the log's path. In Tern it is
-  a native sheet you can click. `/spellbook list [words]` and `/spellbook <words>` open it on Spells. Toasts are left only for one-line
-  errors; a failed cast's toast points at Recent casts, where the whole error is.
+  a native sheet you can click. `/spellbook list [words]` and `/spellbook <words>` open it on Spells. Every toast is
+  now one line; a failed cast's toast points at Recent casts, where the whole error is.
 - **Fuzzy search for saved spells.** The Tab menu and the panel share one matcher, omp's own `fuzzyRank`: words in
   any order, partial words, and one typo (two letters swapped, `gti log`). A match in the spell's words, typo or not,
   ranks above one that needs its command or prompt; equal matches sort by uses, then last use.
