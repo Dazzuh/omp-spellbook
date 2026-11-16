@@ -7,8 +7,10 @@ import {
 	Settings,
 	theme,
 } from "@oh-my-pi/pi-coding-agent";
+import { getActiveRules, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
+import { getActiveSkills, type Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { isNativeRendering, motionEffectsEnabled } from "@oh-my-pi/pi-tui";
 import { wrapAutocomplete } from "./autocomplete";
 import { installEditorHooks, type MorphDisplay, type SpellLook } from "./editor";
@@ -33,6 +35,10 @@ const SDK: HelperSdk = {
 	inMemorySessionManager: cwd => SessionManager.inMemory(cwd),
 	// Each cast gets its own registry, so its agent id never meets the user's session's.
 	agentRegistry: () => new AgentRegistry(),
+	// The same array, not a copy: omp tells whether the user's session still owns the snapshot by identity.
+	activeSkills: () => getActiveSkills() as Skill[],
+	activeRules: getActiveRules,
+	restoreRules: setActiveRules,
 };
 
 function paint(color: string, text: string): string {

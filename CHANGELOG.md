@@ -6,9 +6,9 @@
   magic keywords where they help. It is only ever a prompt: a question about a setting becomes a prompt asking omp,
   whose agent reads `cfg://` and asks before changing anything. It morphs in like a command and waits for Enter.
 - **The model looks things up itself.** Each cast (`?`, `?!` and `?!!` alike) runs the model in a throwaway omp
-  session kept in memory, with read-only tools only (`read`, `grep`, `glob`): it can read your conversation so far
-  from the session's log, omp's docs (`omp://`), your skills (`skill://`), omp's settings and current values
-  (`cfg://`) and the project. Spellbook packs no context for it and nothing it can do writes or runs anything.
+  session kept in memory, with omp's `read`, `grep` and `glob` as its only tools (no edit, write, shell or subagent
+  tool): it can read your conversation so far from the session's log, omp's docs (`omp://`), your skills
+  (`skill://`), omp's settings and current values (`cfg://`) and the project. Spellbook packs no context for it.
 - **The model runs as its role is configured**, thinking level included: the `spellbook` role, else `smol`, else the
   session's model and thinking level. Spellbook sets no reasoning, temperature or token limits of its own.
 - What lands is the model's text exactly as it wrote it; the line under the composer is its own explanation, with the

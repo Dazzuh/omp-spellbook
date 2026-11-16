@@ -6,11 +6,14 @@ import {
 	AgentRegistry,
 	createAgentSession,
 	discoverAuthStorage,
+	discoverSkills,
 	ModelRegistry,
 	SessionManager,
 	Settings,
 } from "@oh-my-pi/pi-coding-agent";
+import { getActiveRules, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { getActiveSkills, type Skill, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { CAST_TOOLS, type HelperSdk, type HelperSession, helperOptions, lastReply, runHelper } from "../src/helper";
 import { pickModel } from "../src/model";
 
@@ -26,6 +29,9 @@ const REAL_SDK: HelperSdk = {
 	createAgentSession,
 	inMemorySessionManager: cwd => SessionManager.inMemory(cwd),
 	agentRegistry: () => new AgentRegistry(),
+	activeSkills: () => getActiveSkills() as Skill[],
+	activeRules: getActiveRules,
+	restoreRules: setActiveRules,
 };
 
 /** An isolated omp: its own agent folder, settings with the given roles, and every built-in model (no credentials needed). */
@@ -88,11 +94,12 @@ describe("the cast model runs as its role is configured", () => {
 				"settings",
 				"systemPrompt",
 				"thinkingLevel",
+				"skills",
 				"toolNames",
 			].sort(),
 		);
-		// Skills stay discovered: `skills: []` would hide skill:// from the model.
-		expect("skills" in options).toBe(false);
+		// The user's own skills, the same array: never `[]`, which would hide skill:// from the model.
+		expect(options.skills).toBe(getActiveSkills() as Skill[]);
 	});
 });
 
@@ -107,6 +114,9 @@ describe("the cast session in stock omp", () => {
 		const log = path.join(root, "session.jsonl");
 		fs.writeFileSync(log, '{"type":"message","message":{"role":"user","content":"fix the flaky test"}}\n');
 		const omp = await isolatedOmp({ spellbook: "anthropic/claude-haiku-5-5:low" }, { "skills.customDirectories": [skills] });
+		// The user's session has published its skills, as a top-level omp session does.
+		const userSkills = (await discoverSkills(project, omp.agentDir, { customDirectories: [skills] } as never)).skills;
+		setActiveSkills(userSkills);
 		const options = helperOptions(
 			{
 				cwd: project,
@@ -120,6 +130,8 @@ describe("the cast session in stock omp", () => {
 		);
 		const { session } = await createAgentSession({ ...options, agentDir: omp.agentDir });
 		try {
+			// The user's skill snapshot is still the user's: omp tracks it by identity.
+			expect(getActiveSkills()).toBe(userSkills);
 			expect(session.getAllToolNames().sort()).toEqual([...CAST_TOOLS].sort());
 			for (const name of ["bash", "eval", "write", "edit", "ast_edit", "task", "browser", "github"]) {
 				expect(session.getToolByName(name)).toBeUndefined();
@@ -146,8 +158,8 @@ describe("the cast session in stock omp", () => {
 
 describe("runHelper", () => {
 	/** A stand-in session that replies with `messages` and records what it was asked. */
-	function fakeSdk(messages: unknown[], hold?: Promise<void>) {
-		const seen = { prompts: [] as string[], aborted: false, disposed: false, options: undefined as unknown };
+	function fakeSdk(messages: unknown[], hold?: Promise<void>, creating?: Promise<void>) {
+		const seen = { prompts: [] as string[], aborted: false, disposed: false, rules: ["user rules"] as unknown[] };
 		const session: HelperSession = {
 			prompt: async text => {
 				seen.prompts.push(text);
@@ -162,12 +174,19 @@ describe("runHelper", () => {
 			messages,
 		};
 		const sdk: HelperSdk = {
-			createAgentSession: async options => {
-				seen.options = options;
+			createAgentSession: async () => {
+				// omp publishes a new top-level session's rules process-wide.
+				seen.rules = ["helper rules"];
+				await creating;
 				return { session };
 			},
 			inMemorySessionManager: () => ({}) as never,
 			agentRegistry: () => ({}) as never,
+			activeSkills: () => [],
+			activeRules: () => seen.rules as never,
+			restoreRules: rules => {
+				seen.rules = rules as unknown[];
+			},
 		};
 		return { sdk, seen };
 	}
@@ -193,6 +212,7 @@ describe("runHelper", () => {
 		expect(await runHelper(request(), sdk)).toEqual({ reply: '{"text":"ls"}', lookups: ["read omp://", "grep flaky"] });
 		expect(seen.prompts).toEqual(["list files here"]);
 		expect(seen.disposed).toBe(true);
+		expect(seen.rules).toEqual(["user rules"]);
 	});
 
 	test("an abort stops the session and rejects", async () => {
@@ -207,6 +227,19 @@ describe("runHelper", () => {
 		await expect(pending).rejects.toThrow();
 		expect(seen.aborted).toBe(true);
 		expect(seen.disposed).toBe(true);
+	});
+
+	test("an abort while the session is being created never asks the model", async () => {
+		const creating = Promise.withResolvers<void>();
+		const { sdk, seen } = fakeSdk([], undefined, creating.promise);
+		const abort = new AbortController();
+		const pending = runHelper(request(abort.signal), sdk);
+		abort.abort();
+		creating.resolve();
+		await expect(pending).rejects.toThrow();
+		expect(seen.prompts).toEqual([]);
+		expect(seen.disposed).toBe(true);
+		expect(seen.rules).toEqual(["user rules"]);
 	});
 
 	test("a model error surfaces as the error", () => {

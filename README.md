@@ -94,9 +94,10 @@ Any model you are logged in to works (`/login`, or the provider's API key in the
 ### What the model sees
 
 Your description, and tools to look the rest up itself. Each cast runs the model in a small omp session of its own,
-kept in memory and thrown away after, whose only tools are `read`, `grep` and `glob`: they read files and omp's own
-`omp://`, `skill://` and `cfg://` pages, and nothing they do writes or runs anything. Its instructions tell it where to
-look:
+kept in memory and thrown away after, whose only tools are omp's `read`, `grep` and `glob`: no edit, write, shell or
+subagent tool. `read` is omp's own, so it reaches what omp's `read` reaches: files, omp's internal URLs, and also web
+pages and remote URLs such as `ssh://` or `issue://`. Nothing it writes is sent to omp's agent or run in your shell
+until you press Enter. Its instructions tell it where to look:
 
 - your conversation so far, from the session's own log file;
 - omp's documentation (`omp://`);
