@@ -17,8 +17,8 @@ Type one of these at the start of the composer and press Enter:
 - `?!! <description>` does the same after `!!`. Its output stays out of the model's context.
 
 The answer replaces your description with a short animation. A line under the composer says what the text does. If a
-command deletes, overwrites, force-pushes or stops something, that line starts with a **⚠ Destructive** warning.
-Pressing Enter while the animation plays only finishes it.
+command deletes, overwrites, force-pushes or stops something, that line starts with a **⚠ Destructive** warning. The
+line goes away when you clear or replace what landed. Pressing Enter while the animation plays only finishes it.
 
 When you send a prompt or command that Spellbook wrote, it is saved under your words. Later, type `?` or `?!` with a
 few of those words and press **Tab**. The list shows matching saved spells, and picking one costs no model call. The
