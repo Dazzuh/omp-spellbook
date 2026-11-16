@@ -6,7 +6,8 @@
  *
  * Runs only with SPELLBOOK_LIVE=1 (it spends tokens). Options:
  * - SPELLBOOK_OMP: how to start omp (default `bun x @oh-my-pi/pi-coding-agent@18.20.2`)
- * - SPELLBOOK_MODEL: the `spellbook` role, thinking level allowed (default `anthropic/claude-haiku-5-5:low`)
+ * - SPELLBOOK_MODEL: the `smol` role, which the default `model` setting (`@smol`) names; thinking level allowed
+ *   (default `anthropic/claude-haiku-5-5:low`)
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
@@ -90,7 +91,7 @@ const DESCRIPTIONS: ReadonlyArray<readonly [string, RegExp]> = [
 describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 	for (const [description, expected] of DESCRIPTIONS) {
 		test(`?! "${description}" works in the ! shell`, async () => {
-			const answer = run("cast", description, overlay({ spellbook: MODEL }));
+			const answer = run("cast", description, overlay({ smol: MODEL }));
 			expect(answer.model).toBe(MODEL_ID);
 			const result = await runInShell(answer.text);
 			if (result.code !== 0 || !expected.test(result.out)) {
@@ -99,13 +100,13 @@ describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 		}, 360_000);
 	}
 
-	test("without a spellbook role the smol role answers", () => {
+	test("the default model setting, @smol, follows omp's --smol", () => {
 		const answer = run("cast", "list the files in this folder", ["--smol", MODEL, ...overlay({})]);
 		expect(answer.model).toBe(MODEL_ID);
 	}, 360_000);
 
 	test("?! a destructive description is flagged", () => {
-		const answer = run("cast", "delete every .log file below here", overlay({ spellbook: MODEL }));
+		const answer = run("cast", "delete every .log file below here", overlay({ smol: MODEL }));
 		expect(answer.destructive).toBe(true);
 	}, 360_000);
 
@@ -116,7 +117,7 @@ describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 		"fix the typo in the readme title",
 	]) {
 		test(`? "${description}" lands a prompt`, () => {
-			const answer = run("prompt", description, overlay({ spellbook: MODEL }));
+			const answer = run("prompt", description, overlay({ smol: MODEL }));
 			expect(answer.model).toBe(MODEL_ID);
 			expect(answer.text.trim().length).toBeGreaterThan(0);
 		}, 360_000);
@@ -134,7 +135,7 @@ describe.skipIf(!LIVE)("? casts a skill fits", () => {
 	const withSkill = () => {
 		const file = path.join(tmp, "skills.yml");
 		fs.writeFileSync(file, `skills:\n  customDirectories:\n    - ${JSON.stringify(skills)}\n`);
-		return [...overlay({ spellbook: MODEL }), "--config", file];
+		return [...overlay({ smol: MODEL }), "--config", file];
 	};
 
 	for (const description of [
@@ -152,7 +153,7 @@ describe.skipIf(!LIVE)("? casts a skill fits", () => {
 describe.skipIf(!LIVE)("casts that only make sense from the conversation", () => {
 	/** A session in which the user already talked about something; later casts resume it. */
 	let session = "";
-	const resume = () => ["--resume", session, ...overlay({ spellbook: MODEL })];
+	const resume = () => ["--resume", session, ...overlay({ smol: MODEL })];
 
 	test("seed: a short conversation about a flaky test", () => {
 		omp([

@@ -12,10 +12,10 @@ import {
 	Settings,
 } from "@oh-my-pi/pi-coding-agent";
 import { getActiveRules, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { getModelMatchPreferences, resolveCliModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { getActiveSkills, type Skill, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { CAST_TOOLS, type HelperSdk, type HelperSession, helperOptions, lastReply, runHelper } from "../src/helper";
-import { pickModel } from "../src/model";
+import { castModel } from "../src/model";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-cast-"));
 // omp keeps its auth database open for the process, so the folder may be locked until exit (Windows).
@@ -34,32 +34,73 @@ const REAL_SDK: HelperSdk = {
 	restoreRules: setActiveRules,
 };
 
-/** An isolated omp: its own agent folder, settings with the given roles, and every built-in model (no credentials needed). */
+/**
+ * An isolated omp: its own agent folder, settings with the given roles, and every built-in model. `pick` resolves a
+ * `model` setting through omp's `resolveCliModel` against a fake registry that offers every model as authenticated,
+ * so no credentials are needed; `picked` is the default setting, `@smol`.
+ */
 async function isolatedOmp(roles: Record<string, string>, extra: Record<string, unknown> = {}) {
 	const agentDir = fs.mkdtempSync(path.join(root, "agent-"));
 	const settings = Settings.isolated({ modelRoles: roles, ...extra });
 	const modelRegistry = new ModelRegistry(await discoverAuthStorage(agentDir, { settings }));
 	const models = modelRegistry.getAll();
-	const picked = pickModel({
-		role: list => resolveRoleSelection(list, settings, models),
-		session: () => undefined,
-	});
-	return { agentDir, settings, modelRegistry, picked };
+	const registry = { getAll: () => models, getAvailable: () => models };
+	// The session's model in these tests: any catalog model from another provider than the ones the settings name.
+	const sessionModel = models.find(model => model.provider !== "anthropic")!;
+	const resolve = (cliModel: string) =>
+		resolveCliModel({ cliModel, modelRegistry: registry, settings, preferences: getModelMatchPreferences(settings) });
+	// omp's own value for "medium", typed as omp types it.
+	const medium = resolve("anthropic/claude-opus-5-5:medium").thinkingLevel;
+	const pick = (selector: string, options: { session?: boolean; noKey?: string } = {}) =>
+		castModel(selector, {
+			resolve,
+			unusable: model => (model.provider === options.noKey ? `no API key for ${options.noKey}` : undefined),
+			session: () => (options.session ? { model: sessionModel, thinkingLevel: medium } : undefined),
+		});
+	return { agentDir, settings, modelRegistry, pick, sessionModel, picked: pick("@smol") };
 }
 
-describe("the cast model runs as its role is configured", () => {
-	test("role spellbook with its thinking level, else smol with its own, else the session's model and level", async () => {
-		const both = await isolatedOmp({ spellbook: "anthropic/claude-haiku-5-5:low", smol: "anthropic/claude-opus-5-5:high" });
-		expect(both.picked).toMatchObject({ via: "spellbook", thinkingLevel: "low", model: { id: "claude-haiku-5-5" } });
-		const smol = await isolatedOmp({ smol: "anthropic/claude-opus-5-5:high" });
-		expect(smol.picked).toMatchObject({ via: "smol", thinkingLevel: "high", model: { id: "claude-opus-5-5" } });
-		const session = pickModel({ role: () => undefined, session: () => ({ model: "opus", thinkingLevel: "medium" }) });
-		expect(session).toEqual({ model: "opus", thinkingLevel: "medium", via: "session" });
-		expect(pickModel({ role: () => undefined, session: () => undefined })).toBeUndefined();
+describe("the cast model is the model setting, resolved as omp resolves prewalk targets", () => {
+	const roles = {
+		smol: "anthropic/claude-haiku-5-5:low",
+		slow: "anthropic/claude-opus-5-5:high",
+		spellbook: "anthropic/claude-sonnet-5-5:medium",
+	};
+	const session = true;
+
+	test("a role alias runs as that role is configured, thinking level included", async () => {
+		const omp = await isolatedOmp(roles);
+		expect(omp.pick("@smol")).toMatchObject({ selector: "@smol", thinkingLevel: "low", model: { id: "claude-haiku-5-5" } });
+		expect(omp.pick("@slow")).toMatchObject({ selector: "@slow", thinkingLevel: "high", model: { id: "claude-opus-5-5" } });
+		// The old `spellbook` role still works when named.
+		expect(omp.pick("@spellbook")).toMatchObject({ thinkingLevel: "medium", model: { id: "claude-sonnet-5-5" } });
+		expect(omp.pick("@smol").fallback).toBeUndefined();
+	});
+
+	test("a provider/id:thinking string runs with that thinking level", async () => {
+		const omp = await isolatedOmp(roles);
+		expect(omp.pick("anthropic/claude-haiku-5-5:xhigh", { session })).toMatchObject({
+			thinkingLevel: "xhigh",
+			model: { provider: "anthropic", id: "claude-haiku-5-5" },
+		});
+		expect(omp.pick("anthropic/claude-opus-5-5", { session }).fallback).toBeUndefined();
+	});
+
+	test("a value that doesn't resolve falls back to the session's model and thinking level, with the reason", async () => {
+		const omp = await isolatedOmp(roles);
+		const bad = omp.pick("nosuchprovider/nosuch-model:low", { session });
+		expect(bad).toMatchObject({ model: omp.sessionModel, thinkingLevel: "medium", selector: "nosuchprovider/nosuch-model:low" });
+		expect(bad.fallback).toBeTruthy();
+		const unsetRole = omp.pick("@nosuchrole", { session });
+		expect(unsetRole).toMatchObject({ model: omp.sessionModel, thinkingLevel: "medium" });
+		expect(unsetRole.fallback).toBeTruthy();
+		const noKey = omp.pick("@slow", { session, noKey: "anthropic" });
+		expect(noKey).toMatchObject({ model: omp.sessionModel, thinkingLevel: "medium", fallback: "no API key for anthropic" });
+		expect(() => omp.pick("nosuchprovider/nosuch-model")).toThrow(/session has no model/);
 	});
 
 	test("the helper session gets the model and thinking level and no other model knob", async () => {
-		const omp = await isolatedOmp({ spellbook: "anthropic/claude-haiku-5-5:low" });
+		const omp = await isolatedOmp({ smol: "anthropic/claude-haiku-5-5:low" });
 		const options = helperOptions(
 			{
 				cwd: root,
@@ -113,7 +154,7 @@ describe("the cast session in stock omp", () => {
 		// The live session's log sits outside the project, as omp's own logs do.
 		const log = path.join(root, "session.jsonl");
 		fs.writeFileSync(log, '{"type":"message","message":{"role":"user","content":"fix the flaky test"}}\n');
-		const omp = await isolatedOmp({ spellbook: "anthropic/claude-haiku-5-5:low" }, { "skills.customDirectories": [skills] });
+		const omp = await isolatedOmp({ smol: "anthropic/claude-haiku-5-5:low" }, { "skills.customDirectories": [skills] });
 		// The user's session has published its skills, as a top-level omp session does.
 		const userSkills = (await discoverSkills(project, omp.agentDir, { customDirectories: [skills] } as never)).skills;
 		setActiveSkills(userSkills);

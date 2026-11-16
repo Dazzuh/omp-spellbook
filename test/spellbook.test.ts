@@ -25,7 +25,14 @@ const PROMPT: PromptAnswer = {
 
 /** A fake composer plus a manual clock, so frames can be counted and stepped. */
 function harness(
-	options: { answer?: CastAnswer; prompt?: PromptAnswer; style?: MorphStyle; reduceMotion?: boolean; gate?: Promise<void> } = {},
+	options: {
+		answer?: CastAnswer;
+		prompt?: PromptAnswer;
+		style?: MorphStyle;
+		reduceMotion?: boolean;
+		gate?: Promise<void>;
+		note?: string;
+	} = {},
 ) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-flow-"));
 	const state = {
@@ -59,18 +66,18 @@ function harness(
 			},
 		},
 		display,
-		settings: () => ({ style: options.style ?? "diff", bookPath: "book.json" }),
+		settings: () => ({ style: options.style ?? "diff", bookPath: "book.json", model: "@smol" }),
 		bookFile: () => path.join(dir, "book.json"),
 		reduceMotion: () => options.reduceMotion === true || display.ternReduceMotion,
 		ask: async description => {
 			state.asked.push(description);
 			await options.gate;
-			return { answer, model: "test/model" };
+			return { answer, model: "test/model", note: options.note };
 		},
 		askPrompt: async description => {
 			state.askedPrompts.push(description);
 			await options.gate;
-			return { answer: options.prompt ?? PROMPT, model: "test/model" };
+			return { answer: options.prompt ?? PROMPT, model: "test/model", note: options.note };
 		},
 		setTimeout: fn => {
 			state.timers.push(fn);
@@ -112,6 +119,18 @@ describe("?! and ?!!", () => {
 		expect(h.state.line).toContain("Lists every file here.");
 		expect(h.display.frame).toBeUndefined();
 		expect(h.state.asked).toEqual(["list files here"]);
+	});
+
+	test("a model fallback note shows on the line under the composer, after the explanation", async () => {
+		h = harness({ note: 'model "@nope": not found; used the session\'s a/b:medium' });
+		h.submit("?! list files here");
+		await h.flush();
+		expect(h.state.text).toBe("!ls -la");
+		expect(h.state.line).toContain("Lists every file here. <warning>(model \"@nope\": not found; used the session's a/b:medium)</warning>");
+		h = harness({ note: "fell back" });
+		h.submit("? review the repo");
+		await h.flush();
+		expect(h.state.line).toContain("<warning>(fell back)</warning>");
 	});
 
 	test("?!! <desc> ends as !!<command>", async () => {
@@ -742,8 +761,8 @@ describe("composer history in omp", () => {
 		};
 		await handlers.get("session_start")!({}, ctx);
 		factory!({ requestRender() {} }, {}, {});
-		expect(handlers.get("input")!({ text: "? review this repo", source: "interactive" }, ctx)).toEqual({ handled: true });
-		expect(handlers.get("input")!({ text: "review this repo", source: "interactive" }, ctx)).toBeUndefined();
+		expect(await handlers.get("input")!({ text: "? review this repo", source: "interactive" }, ctx)).toEqual({ handled: true });
+		expect(await handlers.get("input")!({ text: "review this repo", source: "interactive" }, ctx)).toBeUndefined();
 		expect(recalled).toEqual(["? review this repo"]);
 	});
 });

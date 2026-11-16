@@ -77,21 +77,17 @@ shimmering like a magic keyword; plain terminals show the prefix in colour and a
 
 ## Choosing the model
 
-Spellbook uses omp's model roles, like the rest of omp, and runs the model exactly as the role is configured,
-thinking level included:
+Spellbook writes with the model its `model` setting names (see [Settings](#settings)), in the same form omp's prewalk
+settings take: a role such as `@smol` (the default) or `@slow`, or a model such as `anthropic/claude-haiku-5-5:low`.
+omp resolves it the way it resolves a prewalk target, and the cast runs exactly as configured, thinking level
+included: `@smol` runs at whatever level your `smol` role sets.
 
-1. the `spellbook` role, when you set one;
-2. else the `smol` role;
-3. else the model the session runs on, at the session's thinking level.
+If the value doesn't resolve to a model you can use (a typo, a role you haven't set, no API key for its provider),
+the cast runs on the session's model at the session's thinking level, and the line under the composer says why.
+`/spellbook` shows the value and what it resolves to.
 
-Give Spellbook its own model in your omp `config.yml`:
-
-```yaml
-modelRoles:
-  spellbook: anthropic/claude-haiku-5-5:low
-```
-
-Any model you are logged in to works (`/login`, or the provider's API key in the environment).
+Any model you are logged in to works (`/login`, or the provider's API key in the environment). To keep using a
+`spellbook` role from 0.2, set `model` to `@spellbook`.
 
 ### What the model sees
 
@@ -117,15 +113,17 @@ A cast takes as long as the model spends looking things up. Measured with Haiku 
 
 ## Settings
 
-Change them with `/spellbook`, or edit `<omp agent dir>/spellbook/settings.json` (`~/.omp/agent/spellbook/settings.json`
-by default):
+Spellbook's settings are on its Configure page: `/plugins`, select Spellbook, Configure. Changes apply to the next
+cast, no restart. From a shell: `omp plugin config list omp-spellbook`, `omp plugin config set omp-spellbook style decode`.
 
-| Setting | Values | Default | `/spellbook` command |
-| --- | --- | --- | --- |
-| `style` | `diff`, `decode`, `rewind`, `none` | `diff` | `/spellbook style decode` |
-| `bookPath` | a path; `~` is your home folder, a relative path sits beside `settings.json` | `book.json` | `/spellbook book ~/notes/spellbook.json` |
+| Setting | Values | Default |
+| --- | --- | --- |
+| `style` | `diff`, `decode`, `rewind`, `none` | `diff` |
+| `bookPath` | a path; `~` is your home folder, a relative path sits in `<omp agent dir>/spellbook` | `book.json` |
+| `model` | a model or role, as omp's prewalk settings take it: `@smol`, `anthropic/claude-haiku-5-5:low` | `@smol` |
 
-The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override the file.
+The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override `style` and `bookPath`. `style` also
+takes the letters `D`, `B`, `C` and `off`.
 
 ### Morph styles
 
@@ -176,7 +174,7 @@ SPELLBOOK_LIVE=1 bun test test/live.test.ts   # real model through stock omp: ru
 ```
 
 The live test starts omp with `bun x @oh-my-pi/pi-coding-agent@18.20.2` unless `SPELLBOOK_OMP` names another command,
-and uses `anthropic/claude-haiku-5-5:low` for the `spellbook` role unless `SPELLBOOK_MODEL` says otherwise. CI runs the unit tests, a load check in
+and uses `anthropic/claude-haiku-5-5:low` for the `smol` role (the default `model` setting, `@smol`) unless `SPELLBOOK_MODEL` says otherwise. CI runs the unit tests, a load check in
 stock omp and a GitHub install on Windows, Linux and macOS; the live test runs there when the repository has an
 `ANTHROPIC_API_KEY` secret.
 
