@@ -204,7 +204,7 @@ describe("the panel", () => {
 			component.handleInput(KEY.tab);
 		}
 		expect(seen[0]).toContain("Search:");
-		expect(seen[1]).toContain("/settings → Plugins → Installed → omp-spellbook → Configure");
+		expect(seen[1]).toContain("Change settings  /settings → Plugins");
 		expect(seen[2]).toContain("? make settings appear");
 		expect(component.render(200).join("\n")).toContain("Search:");
 		component.handleInput(KEY.shiftTab);
