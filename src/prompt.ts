@@ -1,3 +1,4 @@
+import { MAIN_AGENT_RULE_NAME, type Rule, ruleAppliesToAgent } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import type { ShellInfo } from "./platform";
 
 /** Where the model can look things up with its read-only tools. */
@@ -32,13 +33,38 @@ function lookupLines(places: LookupPlaces): string[] {
 	];
 }
 
-/** System prompt for `?`: write the prompt the user will send to omp's agent. */
-export function promptSystemPrompt(places: LookupPlaces): string {
+/** The line before the user's rules in the `?` system prompt. */
+export const RULES_FRAMING = "These are the rules the agent you're writing for works under; write a prompt that fits them.";
+
+/**
+ * The rules omp's agent works under at every turn, from omp's rule snapshot: each that always applies,
+ * that no stream condition, ast-grep condition or judge question gates (those fire mid-turn), and whose
+ * `agents` scope admits the main agent. The user's and the project's RULES.md are among them.
+ */
+export function writerRules(rules: readonly Rule[]): Rule[] {
+	return rules.filter(
+		rule =>
+			rule.alwaysApply === true &&
+			!rule.condition?.length &&
+			!rule.astCondition?.length &&
+			!rule.question &&
+			ruleAppliesToAgent(rule, MAIN_AGENT_RULE_NAME),
+	);
+}
+
+/**
+ * System prompt for `?`: write the prompt the user will send to omp's agent. `rules` (already
+ * {@link writerRules}) follow the framing line, each one's content exactly as omp holds it.
+ */
+export function promptSystemPrompt(places: LookupPlaces, rules: readonly Rule[] = []): string {
 	return [
 		"You are Spellbook, inside omp, a coding agent in the terminal. The user describes in plain words what they want omp's agent to do. Write the prompt they will send to omp's agent for it, using omp's docs, skills and magic keywords where they help. It lands in their composer; they read it and send it themselves.",
 		"",
 		...lookupLines(places),
 		"",
+		...(rules.length
+			? [RULES_FRAMING, "", ...rules.flatMap(rule => [`<rule name="${rule.name}">`, rule.content, "</rule>", ""])]
+			: []),
 		'Reply with JSON only: {"text": "<the prompt>", "explain": "<what sending it does, for the user>"}',
 	].join("\n");
 }

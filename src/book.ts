@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fuzzyRank } from "@oh-my-pi/pi-tui";
 
 /** One saved shell command, filed under the words that asked for it. */
 export interface CommandSpell {
@@ -183,13 +184,47 @@ export function addPromptSpell(book: Book, words: string, prompt: string, now: D
 /** A found spell; command spells unless a kind is named, so `match.spell.command` reads need no narrowing. */
 export interface SpellMatch<S extends Spell = CommandSpell> {
 	spell: S;
+	/** Rank, lower is better: the match tier (see {@link findSpells}) times {@link TIER}, plus omp's fuzzy score. */
 	score: number;
 }
 
+/** One tier's step in a {@link SpellMatch} score: wider than any fuzzy score, so a better tier always wins. */
+const TIER = 100_000;
+/** Shortest query word a typo is forgiven in: "ls" swapped is "sl", which matches too much. */
+const TYPO_MIN = 3;
+
 /**
- * Spells of `kind` (commands by default) whose words or text match `query`, best first. Each query
- * token must prefix-match a token of the spell's words or appear in its command or prompt; an empty
- * query lists the most used spells of that kind.
+ * The query with one typo forgiven: one word's two neighbouring letters swapped ("gti log" → "git log"),
+ * each such query once. omp's matcher forgives only a letter swapped with a digit.
+ */
+export function typoQueries(query: string): string[] {
+	const words = query.trim().split(/\s+/).filter(Boolean);
+	const exact = words.join(" ");
+	const out = new Set<string>();
+	words.forEach((word, i) => {
+		const chars = Array.from(word);
+		if (chars.length < TYPO_MIN) return;
+		for (let j = 0; j + 1 < chars.length; j++) {
+			if (chars[j] === chars[j + 1]) continue;
+			const swapped = [...chars.slice(0, j), chars[j + 1], chars[j], ...chars.slice(j + 2)].join("");
+			out.add([...words.slice(0, i), swapped, ...words.slice(i + 1)].join(" "));
+		}
+	});
+	out.delete(exact);
+	return [...out];
+}
+
+function spellText(spell: Spell): string {
+	return spell.kind === "command" ? spell.command : spell.prompt;
+}
+
+/**
+ * Spells of `kind` (commands by default) matching `query`, best first, ranked by omp's fuzzy matcher
+ * (`fuzzyRank`): every query word must match, in any order, as a whole word, a prefix or letters in order.
+ * Tiers, best first: the query in the spell's words; in its words and command or prompt together; the
+ * same two with one typo forgiven ({@link typoQueries}). Within a tier, omp's score, then most uses, then
+ * most recently used. An empty query lists the most used spells of that kind. The Tab menu and the
+ * `/spellbook` panel both call this.
  */
 export function findSpells<K extends SpellKind = "command">(
 	book: Book,
@@ -197,29 +232,36 @@ export function findSpells<K extends SpellKind = "command">(
 	limit = 8,
 	kind: K = "command" as K,
 ): SpellMatch<SpellOf<K>>[] {
-	const queryTokens = tokens(query);
-	const matches: SpellMatch<SpellOf<K>>[] = [];
-	for (const spell of book.entries) {
-		if (spell.kind !== kind) continue;
-		const wordTokens = tokens(spell.words);
-		const text = (spell.kind === "command" ? spell.command : spell.prompt).toLowerCase();
-		let score = 0;
-		let missed = false;
-		for (const q of queryTokens) {
-			if (wordTokens.includes(q)) score += 3;
-			else if (wordTokens.some(w => w.startsWith(q))) score += 2;
-			else if (text.includes(q)) score += 1;
-			else {
-				missed = true;
-				break;
+	const pool = book.entries.filter((spell): spell is SpellOf<K> => spell.kind === kind);
+	const best = new Map<SpellOf<K>, number>();
+	const record = (spell: SpellOf<K>, score: number) => {
+		const seen = best.get(spell);
+		if (seen === undefined || score < seen) best.set(spell, score);
+	};
+	if (!query.trim()) {
+		for (const spell of pool) record(spell, 0);
+	} else {
+		const passes: [string, number][] = [[query, 0], ...typoQueries(query).map((typo): [string, number] => [typo, 2])];
+		for (const [q, tier] of passes) {
+			for (const { item, score } of fuzzyRank(pool, q, spell => spell.words)) record(item, tier * TIER + Math.round(score));
+			for (const { item, score } of fuzzyRank(pool, q, spell => `${spell.words} ${spellText(spell)}`)) {
+				record(item, (tier + 1) * TIER + Math.round(score));
 			}
 		}
-		if (missed) continue;
-		matches.push({ spell: spell as SpellOf<K>, score });
 	}
-	matches.sort(
-		(a, b) =>
-			b.score - a.score || b.spell.uses - a.spell.uses || b.spell.lastUsed.localeCompare(a.spell.lastUsed),
-	);
-	return matches.slice(0, limit);
+	return [...best]
+		.map(([spell, score]) => ({ spell, score }))
+		.sort(
+			(a, b) =>
+				a.score - b.score || b.spell.uses - a.spell.uses || b.spell.lastUsed.localeCompare(a.spell.lastUsed),
+		)
+		.slice(0, limit);
+}
+
+/** The book without the spell of `kind` filed under `words` with `text`; unchanged when there is none. */
+export function forgetSpell(book: Book, kind: SpellKind, words: string, text: string): Book {
+	return {
+		...book,
+		entries: book.entries.filter(spell => !(spell.kind === kind && spell.words === words && spellText(spell) === text)),
+	};
 }

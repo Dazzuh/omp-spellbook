@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { addPromptSpell, addSpell, BookReadError, emptyBook, findSpells, readBook, writeBook } from "../src/book";
+import {
+	addPromptSpell,
+	addSpell,
+	BookReadError,
+	emptyBook,
+	findSpells,
+	forgetSpell,
+	readBook,
+	typoQueries,
+	writeBook,
+} from "../src/book";
 
 let dir: string;
 beforeEach(() => {
@@ -150,5 +160,51 @@ describe("findSpells", () => {
 		// Prompt text matches like command text does.
 		expect(findSpells(book, "scripts", 8, "prompt").map(m => m.spell.words)).toEqual(["review donnager setup"]);
 		expect(findSpells(book, "scripts")).toEqual([]);
+	});
+});
+
+describe("fuzzy matching (omp's fuzzyRank)", () => {
+	const at = (iso: string) => new Date(iso);
+	const book = emptyBook();
+	addSpell(book, "git log recent commits", "git log --oneline -20", at("2026-11-10T00:00:00Z"));
+	addSpell(book, "show disk usage", "du -sh .", at("2026-11-10T00:00:00Z"));
+	addSpell(book, "list big files", "find . -size +10M", at("2026-11-10T00:00:00Z"));
+
+	test("a typo finds the spell: two letters swapped in a word", () => {
+		expect(findSpells(book, "gti log").map(m => m.spell.command)).toEqual(["git log --oneline -20"]);
+		expect(findSpells(book, "dsik").map(m => m.spell.command)).toEqual(["du -sh ."]);
+		expect(typoQueries("gti log")).toContain("git log");
+		// Short words are left alone: "ls" swapped is "sl".
+		expect(typoQueries("ls")).toEqual([]);
+	});
+
+	test("a partial word and words out of order find the spell", () => {
+		expect(findSpells(book, "comm").map(m => m.spell.command)).toEqual(["git log --oneline -20"]);
+		expect(findSpells(book, "usage disk").map(m => m.spell.command)).toEqual(["du -sh ."]);
+		expect(findSpells(book, "files big").map(m => m.spell.command)).toEqual(["find . -size +10M"]);
+	});
+
+	test("a match in the spell's words outranks one in its command, whatever the uses", () => {
+		const ranked = emptyBook();
+		addSpell(ranked, "count lines", "wc -l size.txt", at("2026-11-10T00:00:00Z"));
+		for (let i = 0; i < 5; i++) addSpell(ranked, "biggest folders", "du -h --max-depth=1 | sort -h", at("2026-11-11T00:00:00Z"));
+		addSpell(ranked, "folder size", "du -sh .", at("2026-11-10T00:00:00Z"));
+		expect(findSpells(ranked, "size").map(m => m.spell.words)).toEqual(["folder size", "count lines"]);
+	});
+
+	test("equal matches sort by uses, then by last used", () => {
+		const ties = emptyBook();
+		addSpell(ties, "deploy staging", "make deploy-a", at("2026-11-01T00:00:00Z"));
+		addSpell(ties, "deploy staging", "make deploy-b", at("2026-11-05T00:00:00Z"));
+		addSpell(ties, "deploy staging", "make deploy-c", at("2026-11-02T00:00:00Z"));
+		addSpell(ties, "deploy staging", "make deploy-c", at("2026-11-03T00:00:00Z"));
+		expect(findSpells(ties, "deploy").map(m => m.spell.command)).toEqual(["make deploy-c", "make deploy-b", "make deploy-a"]);
+	});
+
+	test("forgetting a spell takes out exactly that kind, words and text", () => {
+		const both = addPromptSpell(addSpell(emptyBook(), "list files", "ls"), "list files", "List the files");
+		const kept = forgetSpell(both, "command", "list files", "ls");
+		expect(kept.entries.map(spell => spell.kind)).toEqual(["prompt"]);
+		expect(forgetSpell(both, "command", "list files", "ls -la")).toEqual(both);
 	});
 });

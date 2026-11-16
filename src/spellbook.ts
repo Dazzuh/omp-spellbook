@@ -3,13 +3,17 @@ import {
 	addSpell,
 	BookReadError,
 	findSpells,
+	forgetSpell,
 	readBook,
+	type Spell,
 	type SpellKind,
 	type SpellMatch,
 	type SpellOf,
 	tokens,
 	writeBook,
 } from "./book";
+import { SUPERSEDED } from "./castlog";
+import type { CastSettle } from "./helper";
 import { destructiveReason } from "./danger";
 import type { MorphDisplay } from "./editor";
 import { FRAME_MS, morphFrames } from "./morph";
@@ -32,6 +36,16 @@ export interface SpellbookUi {
 	remember(text: string): void;
 }
 
+/** A cast's answer: the model's name, what it looked up, a note for the line under the composer (why the configured model wasn't used), and how to log its end. */
+export interface CastResult<A> {
+	answer: A;
+	model: string;
+	lookups?: string[];
+	note?: string;
+	/** Record how the cast ended in its log; resolves once written. */
+	settle?(result: CastSettle): Promise<void>;
+}
+
 export interface SpellbookDeps {
 	ui: SpellbookUi;
 	display: MorphDisplay;
@@ -39,19 +53,10 @@ export interface SpellbookDeps {
 	bookFile(): string;
 	/** Whether motion is off (omp `tui.motion` or Tern's Reduce Motion). */
 	reduceMotion(): boolean;
-	/**
-	 * Ask the model for a command; resolves with its answer, the model's name, what it looked up and
-	 * a note for the line under the composer (why the configured model wasn't used).
-	 */
-	ask(
-		description: string,
-		signal: AbortSignal,
-	): Promise<{ answer: CastAnswer; model: string; lookups?: string[]; note?: string }>;
-	/** Ask the model for a prompt for omp's agent; resolves as `ask` does. */
-	askPrompt(
-		description: string,
-		signal: AbortSignal,
-	): Promise<{ answer: PromptAnswer; model: string; lookups?: string[]; note?: string }>;
+	/** Ask the model for a command for `sigil`'s `!` line. */
+	ask(description: string, signal: AbortSignal, sigil: "!" | "!!"): Promise<CastResult<CastAnswer>>;
+	/** Ask the model for a prompt for omp's agent. */
+	askPrompt(description: string, signal: AbortSignal): Promise<CastResult<PromptAnswer>>;
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 	paint(color: string, text: string): string;
@@ -65,11 +70,16 @@ type Pending =
 	| { kind: "command"; words: string; sigil: "!" | "!!"; command: string }
 	| { kind: "prompt"; words: string; text: string };
 
+/** A cast error's toast shows this many characters of its first line; the whole error is in the cast's log. */
+const ERROR_CHARS = 120;
+
 /** What a cast lands: the composer text, the line under it, and what to save once it is sent. */
 interface Landing {
 	target: string;
 	line: string;
 	pending: Pending;
+	/** Record how the cast ended in its log. */
+	settle?: CastResult<unknown>["settle"];
 }
 
 /** The plain-words line under the composer: what the command does, with a warning first when it destroys data. */
@@ -153,7 +163,7 @@ export class Spellbook {
 			void this.cast(cast);
 			return { handled: true };
 		}
-		this.#castAbort?.abort();
+		this.#castAbort?.abort("aborted: something else was sent");
 		const pending = this.#pending;
 		const shell = parseShellLine(text);
 		if (pending?.kind === "prompt" && !shell && stillThePrompt(pending.text, text.trim())) {
@@ -191,13 +201,32 @@ export class Spellbook {
 		}
 	}
 
+	/** Take `spell` out of the book. Returns whether it was there; an unreadable book reports and changes nothing. */
+	forget(spell: Spell): boolean {
+		const file = this.deps.bookFile();
+		try {
+			const book = readBook(file);
+			const text = spell.kind === "command" ? spell.command : spell.prompt;
+			const kept = forgetSpell(book, spell.kind, spell.words, text);
+			if (kept.entries.length === book.entries.length) return false;
+			writeBook(file, kept);
+			return true;
+		} catch (error) {
+			this.deps.ui.notify(
+				`Spellbook could not forget "${spell.words}": ${error instanceof Error ? error.message : String(error)}`,
+				"warning",
+			);
+			return false;
+		}
+	}
+
 	/**
 	 * Turn a description into a command (`?!`/`?!!`) or an omp prompt (`?`) and morph it into the
 	 * composer. Never sends or runs anything.
 	 */
 	async cast(request: CastRequest): Promise<void> {
 		const { ui } = this.deps;
-		this.#castAbort?.abort();
+		this.#castAbort?.abort(SUPERSEDED);
 		this.#stopMorph();
 		const abort = new AbortController();
 		this.#castAbort = abort;
@@ -215,7 +244,10 @@ export class Spellbook {
 		} catch (error) {
 			if (abort.signal.aborted) return;
 			ui.setLine(undefined);
-			ui.notify(`Spellbook: ${error instanceof Error ? error.message : String(error)}`, "error");
+			// One line: the whole error and the model's reply are in the cast's log.
+			const message = (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0]!;
+			const short = message.length > ERROR_CHARS ? `${message.slice(0, ERROR_CHARS - 1)}…` : message;
+			ui.notify(`Spellbook: ${short} (/spellbook → Recent casts)`, "error");
 			return;
 		} finally {
 			if (this.#castAbort === abort) {
@@ -223,34 +255,41 @@ export class Spellbook {
 				this.#setCasting(undefined);
 			}
 		}
-		if (abort.signal.aborted) return;
+		if (abort.signal.aborted) {
+			void landing.settle?.({ outcome: "aborted", reason: String(abort.signal.reason) });
+			return;
+		}
 		if (ui.getText() !== typed) {
 			// The user moved on while the model answered: offer the answer without clobbering their text.
 			const [head = "", ...more] = landing.target.split("\n");
 			ui.setLine(`${landing.line} ${this.deps.paint("dim", `(not inserted: ${head}${more.length ? " …" : ""})`)}`);
+			void landing.settle?.({ outcome: "superseded", reason: "the composer changed while the model answered" });
 			return;
 		}
 		ui.setLine(landing.line);
 		this.#landed = landing.target;
 		this.#pending = landing.pending;
 		this.morph(typed, landing.target);
+		void landing.settle?.({ outcome: "landed", landed: landing.target });
 	}
 
 	async #askShell(request: ShellCast, signal: AbortSignal): Promise<Landing> {
-		const { answer, note } = await this.deps.ask(request.description, signal);
+		const { answer, note, settle } = await this.deps.ask(request.description, signal, request.sigil);
 		return {
 			target: `${request.sigil}${answer.text}`,
 			line: this.#withNote(plainWordsLine(answer, this.deps.paint), note),
 			pending: { kind: "command", words: request.description, sigil: request.sigil, command: answer.text },
+			settle,
 		};
 	}
 
 	async #askPrompt(request: PromptCast, signal: AbortSignal): Promise<Landing> {
-		const { answer, note } = await this.deps.askPrompt(request.description, signal);
+		const { answer, note, settle } = await this.deps.askPrompt(request.description, signal);
 		return {
 			target: answer.text,
 			line: this.#withNote(promptWordsLine(answer, this.deps.paint), note),
 			pending: { kind: "prompt", words: request.description, text: answer.text },
+			settle,
 		};
 	}
 
@@ -261,7 +300,7 @@ export class Spellbook {
 
 	/** A spell picked from the Tab list: into the composer with no model call. */
 	pick(pick: SpellPick): void {
-		this.#castAbort?.abort();
+		this.#castAbort?.abort("aborted: a saved spell was picked");
 		const { ui, paint } = this.deps;
 		const saved = `Saved for "${pick.words}".`;
 		if (pick.kind === "prompt") {
@@ -327,7 +366,7 @@ export class Spellbook {
 
 	/** Stop timers and requests (session shutdown). */
 	dispose(): void {
-		this.#castAbort?.abort();
+		this.#castAbort?.abort("aborted: the session ended");
 		this.#stopMorph();
 	}
 }
