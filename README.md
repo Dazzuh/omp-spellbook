@@ -1,147 +1,119 @@
 # Spellbook
 
-Forget the flags, keep the words. Spellbook is an [omp](https://omp.sh) plugin: type `?` and what you want in
-plain words, and a model that looks omp up for itself turns it into the prompt omp's agent needs, naming the skills,
-docs and magic keywords that help; with `?!` it writes the shell command instead. It morphs into the composer; you
-read it, edit it if you like, and press Enter. Nothing is sent or run until you do; Enter while the morph is still
-playing only finishes it.
+Spellbook is an [omp](https://omp.sh) plugin. You describe what you want in plain words, and a model writes it for
+you: a prompt for omp's agent, or a shell command. The answer appears in the composer, and nothing is sent or run
+until you press Enter.
 
 ![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into a prompt that has omp start three subagents in parallel (reviewer, security-reviewer and scout), each reading the repo from a different angle, then merge their findings into one report; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
 
-- `? <description>` → a **prompt** for omp's agent, and only ever a prompt. Ask about a setting and you get a prompt
-  asking omp about it: omp's agent reads your settings and asks before it changes one.
-- `?! <description>` → `!<command>` (runs in your shell, output goes to the model's context, as omp's `!` does)
-- `?!! <description>` → `!!<command>` (output kept out of the model's context)
-- A line under the composer says in the model's words what the text does, with a **⚠ Destructive** warning when a
-  command deletes, moves over, overwrites, force-pushes or stops something (a local check of the command, plus the
-  model's own flag). It goes away once you clear the composer or replace what landed.
-- Every prompt and command you send after a spell is saved in your **spellbook** under your own words. Next time,
-  type `?` (prompts) or `?!` (commands) and a few of those words and press **Tab**: pick the saved one, no model call.
-- Spell lines you press Enter on go into omp's composer history with everything else you send, in the order you sent
-  them: **Up** brings back `? <description>` and Enter casts it again. A result you clear without sending stays out.
+## The three prefixes
 
-Works on Windows, Linux and macOS, with stock omp 18.20.2 or later, in any terminal; the morph is drawn in colour in
-Tern and in omp's ANSI renderer alike.
+Type one of these at the start of the composer and press Enter:
+
+- `? <description>` writes a prompt for omp's agent. It is always a prompt. If you ask about a setting, you get a
+  prompt that asks omp's agent about it.
+- `?! <description>` writes a shell command and puts it after omp's `!`. Its output goes into the model's context,
+  as with any `!` line.
+- `?!! <description>` does the same after `!!`. Its output stays out of the model's context.
+
+The answer replaces your description with a short animation. A line under the composer says what the text does. If a
+command deletes, overwrites, force-pushes or stops something, that line starts with a **⚠ Destructive** warning.
+Pressing Enter while the animation plays only finishes it.
+
+When you send a prompt or command that Spellbook wrote, it is saved under your words. Later, type `?` or `?!` with a
+few of those words and press **Tab**. The list shows matching saved spells, and picking one costs no model call. The
+search forgives a typo and words in any order.
+
+Spell lines you press Enter on go into omp's composer history. Press **Up** to bring back `? <description>` and cast
+it again.
 
 ## Install
 
-You need omp 18.20.2 or later and `git` on your PATH.
-
-**Windows** (PowerShell, cmd or Git Bash):
+You need omp 18.20.2 or later and `git` on your PATH. On Windows, Linux and macOS:
 
 ```sh
 omp plugin install github:Dazzuh/omp-spellbook
 ```
 
-omp runs `!` lines in its own embedded bash engine, which has the common tools built in (`ls`, `find`, `grep`, `sed`,
-`awk`, `head`, `wc` and more), so Spellbook writes Bash commands on Windows too. With
-[Git for Windows](https://git-scm.com/download/win) installed, omp loads Git Bash's setup and its programs; without it,
-anything beyond the built-ins has to be a Windows program (`where`, `tasklist`, `powershell -Command`).
+Restart omp or open a new session. To remove it, run `omp plugin uninstall omp-spellbook`. To try it without
+installing, run `omp -e /path/to/omp-spellbook`.
 
-**Linux and macOS**:
+Commands are written for the shell that omp's `!` uses:
 
-```sh
-omp plugin install github:Dazzuh/omp-spellbook
-```
+- **Linux and macOS:** your `$SHELL` if it is zsh or fish. Otherwise omp's built-in bash engine, with your bash setup
+  loaded.
+- **Windows:** omp's built-in bash engine. It has common tools built in, such as `ls`, `find`, `grep`, `sed` and `awk`.
+  With [Git for Windows](https://git-scm.com/download/win) installed, Git Bash's programs work too. Without it,
+  anything else has to be a Windows program.
 
-Commands are written for the shell omp's `!` uses: your `$SHELL` when it is zsh or fish (omp runs those for real),
-else omp's embedded bash engine with your bash setup loaded.
+## The Tern half
 
-Restart omp (or open a new session) and run `/spellbook` to see what it picked: style, spellbook file, model and
-shell.
-
-To try it without installing: `omp -e /path/to/omp-spellbook`. To remove it: `omp plugin uninstall omp-spellbook`.
-
-### The Tern half (optional)
-
-In [Tern](https://docs.stencil.so/tern), Spellbook has a second part: a small Tern plugin that gives a spell line its full
-look. The chip stands in for the typed prefix, the way omp's bash chip stands in for `!`:
-
-- a `?` line shows a **✦ spellbook** chip and a glow around the composer in your theme's accent;
-- a `?!` line shows **✦ spellbook !**, a `?!!` line **✦ spellbook !!**, in Tern's success green (`--ok`), the colour a
-  landed `!` command takes in a theme that turns omp's bash chip green.
-
-While the model answers, the glow breathes; when the answer lands, both go (omp's bash chip takes over for a `!`
-line). Install it once (any OS):
+In [Tern](https://docs.stencil.so/tern), an optional Tern plugin gives spell lines their full look. Install it once:
 
 ```sh
 tern plugin install github.com/Dazzuh/omp-spellbook/tern
 ```
 
-`tern plugin list` then shows `spellbook 0.2.0`; `tern plugin remove spellbook` removes it. Its look is plain CSS
-(`tern/spellbook.css`) shipped as the plugin's manifest styles, so it also reaches remote hosts and Tern's web tab.
-The words keep omp's magic-keyword rainbow.
+With it, a `?` line shows a **✦ spellbook** chip and a glow around the composer in your theme's accent. A `?!` line
+shows **✦ spellbook !** and a `?!!` line **✦ spellbook !!**, both in Tern's success green. The glow breathes while
+the model answers. `tern plugin remove spellbook` removes it.
 
-Without the plugin, Tern still shows the prefix (`?` in accent, `?!` and `?!!` in green) and the description
-shimmering like a magic keyword; plain terminals show the prefix in colour and a purple hue sweep over the description.
-
-## Choosing the model
-
-Spellbook writes with the model its `model` setting names (see [Settings](#settings)), in the same form omp's prewalk
-settings take: a role such as `@smol` (the default) or `@slow`, or a model such as `anthropic/claude-haiku-5-5:low`.
-omp resolves it the way it resolves a prewalk target, and the cast runs exactly as configured, thinking level
-included: `@smol` runs at whatever level your `smol` role sets.
-
-If the value doesn't resolve to a model you can use (a typo, a role you haven't set, no API key for its provider),
-the cast runs on the session's model at the session's thinking level, and the line under the composer says why.
-`/spellbook` shows the value and what it resolves to.
-
-Any model you are logged in to works (`/login`, or the provider's API key in the environment). To keep using a
-`spellbook` role from 0.2, set `model` to `@spellbook`.
-
-### What the model sees
-
-Your description, and tools to look the rest up itself. Each cast runs the model in a small omp session of its own,
-kept in memory and thrown away after, whose only tools are omp's `read`, `grep` and `glob`: no edit, write, shell or
-subagent tool. `read` is omp's own, so it reaches what omp's `read` reaches: files, omp's internal URLs, and also web
-pages and remote URLs such as `ssh://` or `issue://`. Nothing it writes is sent to omp's agent or run in your shell
-until you press Enter. Its instructions tell it where to look:
-
-- your conversation so far, from the session's own log file;
-- omp's documentation (`omp://`);
-- your skills (`skill://<name>`), with the folders omp found them in, so it can list them;
-- omp's settings and their current values (`cfg://`);
-- the project you're in.
-
-So `? fix that flaky test I mentioned` can work: the model reads back what you said. It replies with the text to land
-and a sentence for the line under the composer (plus, for a command, whether it destroys anything), and that text
-lands as written. For `?!`/`?!!` the instructions also say which shell `!` runs in on which OS, with what omp's
-shell has built in.
-
-A cast takes as long as the model spends looking things up. Measured with Haiku on Windows: 1.5 to 4.5 seconds for a
-`?!` command, 6 to 13 seconds for a `?` prompt.
+Without the Tern plugin, the prefix is still coloured and the description shimmers. Other terminals show the prefix
+in colour and a purple sweep over the description.
 
 ## Settings
 
-Spellbook's settings are on its Configure page: `/plugins`, select Spellbook, Configure. Changes apply to the next
-cast, no restart. From a shell: `omp plugin config list omp-spellbook`, `omp plugin config set omp-spellbook style decode`.
+Spellbook's settings are on its Configure page: run `/plugins`, select Spellbook (omp-spellbook), then Configure. A change
+applies to the next cast without a restart.
 
-| Setting | Values | Default |
+| Setting | What it does | Default |
 | --- | --- | --- |
-| `style` | `diff`, `decode`, `rewind`, `none` | `diff` |
-| `bookPath` | a path; `~` is your home folder, a relative path sits in `<omp agent dir>/spellbook` | `book.json` |
-| `model` | a model or role, as omp's prewalk settings take it: `@smol`, `anthropic/claude-haiku-5-5:low` | `@smol` |
+| `style` | The animation: `diff`, `decode`, `rewind` or `none` | `diff` |
+| `bookPath` | Where saved spells are kept. `~` is your home folder. A relative path is inside `<omp agent dir>/spellbook`. | `book.json` |
+| `model` | The model that writes, as a role (`@smol`, `@slow`) or a model (`anthropic/claude-haiku-5-5:low`) | `@smol` |
 
-The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override `style` and `bookPath`. `SPELLBOOK_STYLE`
-(and a `style` edited by hand in omp's plugin lockfile) also takes the letters `D`, `B`, `C` and `off`.
+The styles:
 
-### Morph styles
+- `diff` keeps the letters both texts share. The rest of your words fade out in red while the answer grows in green.
+- `decode` sweeps scrambled glyphs left to right until they settle into the answer.
+- `rewind` erases your words backwards, then types the answer.
+- `none` shows the answer at once.
 
-- **`diff`** (default): letters both texts share stay put; the rest of your words turn red and dissolve while the
-  answer's letters grow in, green as they arrive.
-- **`decode`**: scrambled glyphs sweep left to right and settle into the answer.
-- **`rewind`**: your words erase backwards, then the answer types itself out.
-- **`none`**: the answer just appears.
+The animation turns off when omp's Motion setting (`tui.motion`) is `reduced` or `none`, or when Tern's Reduce Motion
+is on.
 
-Prompts and shell commands morph the same way. Motion turns off by itself when omp's
-**Motion** setting (`tui.motion`) is `reduced` or `none`, or when Tern's Reduce Motion is on: no morph, no shimmer or
-pulse on the spell line, and the Tern half's glow stays still. Colour shows in Tern and in terminals omp draws in
-ANSI; when another extension has replaced omp's composer, Spellbook plays the morph as plain text and leaves the spell
-line unstyled.
+`model` runs the cast with that model's thinking level, so `@smol` uses whatever your `smol` role sets. If the value
+doesn't give a usable model, for example a typo or a provider with no API key, the cast uses the session's model. The
+line under the composer then says why.
+
+Two environment variables override settings: `SPELLBOOK_STYLE` for `style` and `SPELLBOOK_BOOK` for `bookPath`.
+`SPELLBOOK_STYLE` also takes the letters `D`, `B`, `C` and `off`.
+
+From a shell, `omp plugin config list omp-spellbook` shows the settings, and
+`omp plugin config set omp-spellbook style decode` changes one.
+
+## The /spellbook panel
+
+`/spellbook` opens a panel over the session. It stays open until you press Esc, and it works while omp's agent is
+busy. Nothing in it goes into the conversation. Tab moves between its three parts:
+
+- **Spells:** your saved spells. Type to search. Enter puts the selected spell in the composer. Ctrl+X twice forgets
+  it. Each spell shows how often you used it and when.
+- **Now:** each setting's value, the model `model` resolves to, the shell, where cast logs go, and where to change
+  settings.
+- **Recent casts:** the latest casts with their model, time taken and outcome. The selected cast shows each file and
+  page the model looked up, and the path of its log.
+
+In Tern the panel is a native sheet that you can also click. `/spellbook list <words>` opens it on Spells with
+`<words>` already in the search.
+
+`/spellbook prompt <description>` is the same as typing `? <description>`. `/spellbook cast <description>` is the same
+as `?! <description>`. When omp runs headless (`omp -p`), both print the answer as JSON, and `/spellbook` prints the
+Now part.
 
 ## The spellbook file
 
-A plain JSON file you can read, edit, copy between machines or keep in your dotfiles:
+Saved spells live in a plain JSON file that you can read, edit or copy between machines:
 
 ```json
 {
@@ -153,30 +125,62 @@ A plain JSON file you can read, edit, copy between machines or keep in your dotf
 }
 ```
 
-What's saved is what you actually sent, edits included: a command as long as it still starts with the same program,
-a prompt as long as it keeps at least half of the words Spellbook wrote. Something
-else typed instead isn't filed under those words. A 0.1 file (`"version": 1`, `"spells"`) reads as commands and is
-saved back as version 2; 0.1 can't read a version 2 file and says so instead of overwriting it. If the file stops
-being valid (bad JSON, or an entry without its `kind`, `words` and text), Spellbook warns you and leaves it alone
-rather than overwrite your edits.
+Spellbook saves what you actually sent, edits included. A command is saved if it still starts with the same program.
+A prompt is saved if it keeps at least half of the words Spellbook wrote.
 
-`/spellbook list [words]` shows saved spells; `/spellbook prompt <description>` is the same as typing
-`? <description>`, and `/spellbook cast <description>` the same as `?! <description>` (both print the answer as JSON
-when omp runs headless, `omp -p`).
+A file from Spellbook 0.1 is read as commands and saved back in this format. If the file stops being valid JSON, or
+an entry lacks its kind, words or text, Spellbook warns you and doesn't overwrite it.
+
+## Cast logs
+
+Every cast is saved as an omp session file in `<omp agent dir>/spellbook/casts`, one file per cast. This folder is
+separate from omp's own sessions, so casts never appear in `/resume`.
+
+A log holds what you asked, the full system prompt, the model and thinking level, each lookup with its result, the
+model's reply, what landed in the composer, token use and cost, and how long each step took. Casts that fail or that
+you abandon are logged too, with their outcome. A cast that looks things up a lot can make a log of a few hundred KB.
+Spellbook doesn't delete old logs.
+
+## How it works
+
+Each cast runs the model in a small omp session of its own. Its only tools are omp's `read`, `grep` and `glob`, so
+it can look things up but can't edit files, run commands or start agents. `read` is omp's own tool, so it also
+reaches web pages and omp's internal URLs.
+
+The model is told where to look:
+
+- your conversation so far, from the session's log;
+- omp's documentation (`omp://`);
+- your skills (`skill://<name>`) and the folders they are in;
+- omp's settings and their values (`cfg://`);
+- the project you're in.
+
+That is why `? fix that flaky test I mentioned` works: the model reads back what you said earlier.
+
+For `?`, the model also gets your rules: every rule that omp's agent always works under, such as your `RULES.md` and
+the project's `.omp/RULES.md`, word for word. The prompt it writes then fits how you work. Rules that fire only
+mid-turn, and rules meant for other agents, are left out. For `?!` and `?!!`, it is told which shell runs the line on
+which OS.
+
+The model replies with the text and a sentence for the line under the composer, and the text lands exactly as written.
+How long a cast takes depends on how much the model looks up. With Haiku, a `?!` command took about 3 seconds, and a
+`?` prompt that read 25 files took about a minute.
 
 ## Development
 
 ```sh
 bun install
-bun test                      # unit tests
+bun test
 bun run typecheck
-SPELLBOOK_LIVE=1 bun test test/live.test.ts   # real model through stock omp: runs the commands in your ! shell, casts prompts, some from a resumed conversation
+SPELLBOOK_LIVE=1 bun test test/live.test.ts
 ```
 
-The live test starts omp with `bun x @oh-my-pi/pi-coding-agent@18.20.2` unless `SPELLBOOK_OMP` names another command,
-and uses `anthropic/claude-haiku-5-5:low` for the `smol` role (the default `model` setting, `@smol`) unless `SPELLBOOK_MODEL` says otherwise. CI runs the unit tests, a load check in
-stock omp and a GitHub install on Windows, Linux and macOS; the live test runs there when the repository has an
-`ANTHROPIC_API_KEY` secret.
+The last line is a live test against a real model through stock omp. It runs the commands it gets in your `!` shell.
+It starts omp with `bun x @oh-my-pi/pi-coding-agent@18.20.2` unless `SPELLBOOK_OMP` names another command. It uses
+`anthropic/claude-haiku-5-5:low` for the `smol` role unless `SPELLBOOK_MODEL` says otherwise.
+
+CI runs the unit tests, a load check in stock omp and a GitHub install on Windows, Linux and macOS. The live test
+runs there too when the repository has an `ANTHROPIC_API_KEY` secret.
 
 ## Licence
 
