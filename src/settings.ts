@@ -1,12 +1,12 @@
 /**
  * Spellbook's settings. Declared under `omp.settings` in package.json, so they show on the plugin's
- * `/plugins` Configure page; omp returns only what the user configured, so every default lives here.
+ * Configure page (`/settings` → Plugins); omp returns only what the user configured, so every default lives here.
  */
 import * as os from "node:os";
 import * as path from "node:path";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
 
-/** Plugin id: the key `/plugins` and `omp plugin config` keep `omp.settings` values under. */
+/** Plugin id: the key the Configure page and `omp plugin config` keep `omp.settings` values under. */
 export const PLUGIN_NAME = "omp-spellbook";
 
 /** How the command arrives in the composer. */

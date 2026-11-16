@@ -79,7 +79,7 @@ export function nowRows(now: NowState): NowRow[] {
 		{ label: "Model", ...model },
 		{ label: "Shell", value: now.shell },
 		{ label: "Cast logs", value: now.castsDir },
-		{ label: "Change settings", value: "/plugins → omp-spellbook → Configure" },
+		{ label: "Change settings", value: "/settings → Plugins → Installed → omp-spellbook → Configure" },
 		...now.overrides.map(override => ({ label: "Set by environment", value: override })),
 		...now.problems.map(problem => ({ label: "Settings problem", value: problem, warn: true })),
 	];
@@ -162,7 +162,7 @@ export class SpellbookPanel implements Component {
 	#now: NowRow[] = [];
 	#casts: CastSummary[] = [];
 	#selected: Record<PanelSection, number> = { spells: 0, now: 0, casts: 0 };
-	/** The spell Ctrl+X asked to forget, waiting for a second Ctrl+X. */
+	/** The spell Ctrl+X asked to forget, waiting for Enter or a second Ctrl+X. */
 	#forgetting: PanelSpell | undefined;
 	#status: string | undefined;
 	#focused = false;

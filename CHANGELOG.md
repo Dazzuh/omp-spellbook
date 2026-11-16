@@ -27,7 +27,7 @@
   and disposing one disposes omp's process-wide agent lifecycle, which holds the session's adopted and parked
   subagents. It is now a sub-agent session, so ending a cast leaves them alone.
 - **Settings on the Configure page.** `style` and `bookPath` are declared as omp plugin settings, so they show on
-  Spellbook's `/plugins` Configure page and in `omp plugin config list omp-spellbook`. They are read on every use,
+  Spellbook's Configure page (`/settings` → Plugins → Installed → omp-spellbook) and in `omp plugin config list omp-spellbook`. They are read on every use,
   so a change applies to the next cast without a restart. `<omp agent dir>/spellbook/settings.json` is no longer
   read, and `/spellbook style` and `/spellbook book` are gone. `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` still override,
   and a relative `bookPath` still sits in `<omp agent dir>/spellbook`.

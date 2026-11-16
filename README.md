@@ -63,8 +63,8 @@ in colour and a purple sweep over the description.
 
 ## Settings
 
-Spellbook's settings are on its Configure page: run `/plugins`, select Spellbook (omp-spellbook), then Configure. A change
-applies to the next cast without a restart.
+Spellbook's settings are on its Configure page: run `/settings`, open Plugins → Installed, select omp-spellbook, then
+Configure. A change applies to the next cast without a restart.
 
 | Setting | What it does | Default |
 | --- | --- | --- |

@@ -119,7 +119,7 @@ describe("panel state", () => {
 			["Model", "@smol not usable (no API key for anthropic/claude-haiku-5-5); casts use the session's anthropic/claude-sonnet-5-5:medium"],
 			["Shell", "/bin/bash"],
 			["Cast logs", "/home/u/.omp/agent/spellbook/casts"],
-			["Change settings", "/plugins → omp-spellbook → Configure"],
+			["Change settings", "/settings → Plugins → Installed → omp-spellbook → Configure"],
 			["Set by environment", "SPELLBOOK_STYLE=decode"],
 			["Settings problem", 'style "x" is not one of diff, decode, rewind, none; using diff'],
 		]);
@@ -204,7 +204,7 @@ describe("the panel", () => {
 			component.handleInput(KEY.tab);
 		}
 		expect(seen[0]).toContain("Search:");
-		expect(seen[1]).toContain("/plugins → omp-spellbook → Configure");
+		expect(seen[1]).toContain("/settings → Plugins → Installed → omp-spellbook → Configure");
 		expect(seen[2]).toContain("? make settings appear");
 		expect(component.render(200).join("\n")).toContain("Search:");
 		component.handleInput(KEY.shiftTab);
