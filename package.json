@@ -33,7 +33,25 @@
 		"description": "Describe what you want after `?` and get the prompt omp's agent needs, written by a model that looks up omp's docs, your skills and settings and your conversation; after `?!`, the shell command as `!<command>`.",
 		"extensions": [
 			"./src/index.ts"
-		]
+		],
+		"settings": {
+			"style": {
+				"type": "enum",
+				"values": ["diff", "decode", "rewind", "none"],
+				"description": "How a cast's answer arrives in the composer: diff, decode, rewind or none (no animation)",
+				"default": "diff"
+			},
+			"bookPath": {
+				"type": "string",
+				"description": "Spellbook file of saved spells; a relative path sits in <omp agent dir>/spellbook, ~ is your home folder",
+				"default": "book.json"
+			},
+			"model": {
+				"type": "string",
+				"description": "Model or role (default '@smol') Spellbook writes prompts and commands with.",
+				"default": "@smol"
+			}
+		}
 	},
 	"scripts": {
 		"test": "bun test",

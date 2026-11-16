@@ -4,23 +4,42 @@ export interface Configured<M, T> {
 	thinkingLevel?: T;
 }
 
-export interface PickedModel<M, T> extends Configured<M, T> {
-	/** Which source supplied it: the `spellbook` role, the `smol` role, or the session model as a last resort. */
-	via: "spellbook" | "smol" | "session";
+/** What the `model` setting resolved to for one cast. */
+export interface CastModel<M, T> extends Configured<M, T> {
+	/** The `model` setting as configured: `@smol`, `anthropic/claude-haiku-5-5:low`. */
+	selector: string;
+	/** Set when the setting did not resolve and the cast runs on the session's model instead: why. */
+	fallback?: string;
 }
 
-/** How Spellbook reads omp's roles and the session's model; omp's `resolveRoleSelection` and the session in practice. */
+/** How Spellbook resolves a selector and reads the session's model; omp's `resolveCliModel` and the session in practice. */
 export interface ModelSources<M, T> {
-	/** The first role in `roles` that resolves, with its model and thinking level. */
-	role(roles: readonly string[]): (Configured<M, T> & { role: string }) | undefined;
+	/** The selector as omp resolves prewalk targets: role aliases, `provider/id`, a `:thinking` suffix. */
+	resolve(selector: string): { model?: M; thinkingLevel?: T; error?: string };
+	/** Why `model` can't be used (no credentials, disabled provider), or undefined when it can. */
+	unusable(model: M): string | undefined;
 	/** The session's own model and thinking level. */
 	session(): Configured<M, T> | undefined;
 }
 
-/** Model for a cast, run as configured: role `spellbook`, else role `smol`, else the session's model. */
-export function pickModel<M, T>(sources: ModelSources<M, T>): PickedModel<M, T> | undefined {
-	const role = sources.role(["spellbook", "smol"]);
-	if (role) return { model: role.model, thinkingLevel: role.thinkingLevel, via: role.role === "spellbook" ? "spellbook" : "smol" };
+/**
+ * The model a cast runs on: the `model` setting with its thinking level, or, when it doesn't
+ * resolve to a usable model, the session's model and thinking level with the reason in `fallback`.
+ * Throws when neither is available.
+ */
+export function castModel<M, T>(selector: string, sources: ModelSources<M, T>): CastModel<M, T> {
+	let reason: string;
+	try {
+		const resolved = sources.resolve(selector);
+		const unusable = resolved.model === undefined ? undefined : sources.unusable(resolved.model);
+		if (resolved.model !== undefined && unusable === undefined) {
+			return { model: resolved.model, thinkingLevel: resolved.thinkingLevel, selector };
+		}
+		reason = unusable ?? resolved.error ?? `model "${selector}" not found`;
+	} catch (error) {
+		reason = error instanceof Error ? error.message : String(error);
+	}
 	const session = sources.session();
-	return session?.model ? { model: session.model, thinkingLevel: session.thinkingLevel, via: "session" } : undefined;
+	if (!session) throw new Error(`model setting "${selector}": ${reason}; the session has no model to fall back to`);
+	return { model: session.model, thinkingLevel: session.thinkingLevel, selector, fallback: reason };
 }

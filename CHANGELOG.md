@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+- **Settings on the Configure page.** `style` and `bookPath` are declared as omp plugin settings, so they show on
+  Spellbook's `/plugins` Configure page and in `omp plugin config list omp-spellbook`. They are read on every use,
+  so a change applies to the next cast without a restart. `<omp agent dir>/spellbook/settings.json` is no longer
+  read, and `/spellbook style` and `/spellbook book` are gone. `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` still override,
+  and a relative `bookPath` still sits in `<omp agent dir>/spellbook`.
+- **The cast model is a setting.** `model` (default `@smol`) takes a model or role the way omp's prewalk settings do
+  (`@smol`, `@slow`, `anthropic/claude-haiku-5-5:low`) and is resolved like a prewalk target, thinking level
+  included. The `spellbook` role is no longer read: set `model` to `@spellbook` to keep using it. A value that
+  doesn't resolve to a usable model falls back to the session's model and thinking level, and the line under the
+  composer says why. `/spellbook` shows the configured value and what it resolved to.
+
 ## 0.2.1
 
 - `?`, `?!` and `?!!` lines you press Enter on now go into omp's composer history (Up/Down, and omp's saved prompt

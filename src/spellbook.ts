@@ -39,10 +39,19 @@ export interface SpellbookDeps {
 	bookFile(): string;
 	/** Whether motion is off (omp `tui.motion` or Tern's Reduce Motion). */
 	reduceMotion(): boolean;
-	/** Ask the model for a command; resolves with its answer, the model's name and what it looked up. */
-	ask(description: string, signal: AbortSignal): Promise<{ answer: CastAnswer; model: string; lookups?: string[] }>;
-	/** Ask the model for a prompt for omp's agent; resolves with its answer, the model's name and what it looked up. */
-	askPrompt(description: string, signal: AbortSignal): Promise<{ answer: PromptAnswer; model: string; lookups?: string[] }>;
+	/**
+	 * Ask the model for a command; resolves with its answer, the model's name, what it looked up and
+	 * a note for the line under the composer (why the configured model wasn't used).
+	 */
+	ask(
+		description: string,
+		signal: AbortSignal,
+	): Promise<{ answer: CastAnswer; model: string; lookups?: string[]; note?: string }>;
+	/** Ask the model for a prompt for omp's agent; resolves as `ask` does. */
+	askPrompt(
+		description: string,
+		signal: AbortSignal,
+	): Promise<{ answer: PromptAnswer; model: string; lookups?: string[]; note?: string }>;
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 	paint(color: string, text: string): string;
@@ -228,21 +237,26 @@ export class Spellbook {
 	}
 
 	async #askShell(request: ShellCast, signal: AbortSignal): Promise<Landing> {
-		const { answer } = await this.deps.ask(request.description, signal);
+		const { answer, note } = await this.deps.ask(request.description, signal);
 		return {
 			target: `${request.sigil}${answer.text}`,
-			line: plainWordsLine(answer, this.deps.paint),
+			line: this.#withNote(plainWordsLine(answer, this.deps.paint), note),
 			pending: { kind: "command", words: request.description, sigil: request.sigil, command: answer.text },
 		};
 	}
 
 	async #askPrompt(request: PromptCast, signal: AbortSignal): Promise<Landing> {
-		const { answer } = await this.deps.askPrompt(request.description, signal);
+		const { answer, note } = await this.deps.askPrompt(request.description, signal);
 		return {
 			target: answer.text,
-			line: promptWordsLine(answer, this.deps.paint),
+			line: this.#withNote(promptWordsLine(answer, this.deps.paint), note),
 			pending: { kind: "prompt", words: request.description, text: answer.text },
 		};
+	}
+
+	/** The line under the composer with the cast's note after it, in the warning colour. */
+	#withNote(line: string, note: string | undefined): string {
+		return note ? `${line} ${this.deps.paint("warning", `(${note})`)}` : line;
 	}
 
 	/** A spell picked from the Tab list: into the composer with no model call. */
