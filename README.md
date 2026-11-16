@@ -6,7 +6,7 @@ docs and magic keywords that help; with `?!` it writes the shell command instead
 read it, edit it if you like, and press Enter. Nothing is sent or run until you do; Enter while the morph is still
 playing only finishes it.
 
-![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into "orchestrate a review of this repo for bugs. Get a few agents to each take a separate area of the codebase…"; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
+![In Tern's dark theme, "? get a few agents to review this repo for bugs" morphs into a prompt that has omp start three subagents in parallel (reviewer, security-reviewer and scout), each reading the repo from a different angle, then merge their findings into one report; then "?! find files bigger than 1 MB under here" morphs into "!find . -type f -size +1M -exec ls -lh {} +"](docs/demo.gif)
 
 - `? <description>` → a **prompt** for omp's agent, and only ever a prompt. Ask about a setting and you get a prompt
   asking omp about it: omp's agent reads your settings and asks before it changes one.
@@ -109,7 +109,8 @@ and a sentence for the line under the composer (plus, for a command, whether it 
 lands as written. For `?!`/`?!!` the instructions also say which shell `!` runs in on which OS, with what omp's
 shell has built in.
 
-A cast takes as long as the model spends looking things up: a few seconds to a minute or so.
+A cast takes as long as the model spends looking things up. Measured with Haiku on Windows: 1.5 to 4.5 seconds for a
+`?!` command, 6 to 13 seconds for a `?` prompt.
 
 ## Settings
 
