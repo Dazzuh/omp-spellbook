@@ -123,6 +123,32 @@ describe.skipIf(!LIVE)(`live on ${process.platform}`, () => {
 	}
 });
 
+describe.skipIf(!LIVE)("? casts a skill fits", () => {
+	/** A skill only this test has, in a folder of its own, so the cast can only know it by looking. */
+	const skills = path.join(tmp, "skills");
+	fs.mkdirSync(path.join(skills, "changelog-entry"), { recursive: true });
+	fs.writeFileSync(
+		path.join(skills, "changelog-entry", "SKILL.md"),
+		"---\nname: changelog-entry\ndescription: Use when adding an entry to CHANGELOG.md: which section, tense and wording this repo uses.\n---\n\n# Changelog entries\n\nNew entries go under the top version heading, one bullet per change, present tense.\n",
+	);
+	const withSkill = () => {
+		const file = path.join(tmp, "skills.yml");
+		fs.writeFileSync(file, `skills:\n  customDirectories:\n    - ${JSON.stringify(skills)}\n`);
+		return [...overlay({ spellbook: MODEL }), "--config", file];
+	};
+
+	for (const description of [
+		"add a line to the changelog saying the spell's explanation now goes away when you clear the composer",
+		"write a tern plugin that adds a palette command to open htop in a split",
+		"file an issue in kata for the flaky cast test",
+	]) {
+		test(`? "${description}" lands a prompt (lookups printed)`, () => {
+			const answer = run("prompt", description, withSkill());
+			expect(answer.text.trim().length).toBeGreaterThan(0);
+		}, 360_000);
+	}
+});
+
 describe.skipIf(!LIVE)("casts that only make sense from the conversation", () => {
 	/** A session in which the user already talked about something; later casts resume it. */
 	let session = "";

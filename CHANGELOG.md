@@ -13,6 +13,8 @@
   session's model and thinking level. Spellbook sets no reasoning, temperature or token limits of its own.
 - What lands is the model's text exactly as it wrote it; the line under the composer is its own explanation, with the
   ⚠ warning for destructive commands as before. Its reply is a small JSON envelope that only separates those parts.
+  The line goes away once the composer is cleared or no longer holds what landed.
+- The model is told which folders your skills are in (from omp's own skill discovery), so it can list and read them.
 - `?!` no longer sends recent `!` commands, SSH host aliases or saved commands, and no longer strips `$`, `!` or
   backticks from the answer; the `recentCommands` setting is gone.
 - **Shell commands moved to `?!`** (`!<command>`) and `?!!` (`!!<command>`); `??` is no longer a spell.

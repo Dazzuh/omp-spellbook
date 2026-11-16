@@ -87,8 +87,27 @@ export class Spellbook {
 	/** The text the running morph ends on; set only while frames are still to come. */
 	#morphTarget: string | undefined;
 	#castAbort: AbortController | undefined;
+	/** The composer text the line under it describes (a landed or picked spell); undefined when it describes none. */
+	#landed: string | undefined;
 
 	constructor(readonly deps: SpellbookDeps) {}
+
+	/**
+	 * The composer changed (omp's editor onChange). Once the landed spell is no longer in it, wiped
+	 * or replaced, the line under the composer goes too. Morph frames and the spell line waiting on
+	 * the model are ignored. The spell stays pending, so sending it still saves it as before.
+	 */
+	onTextChange(text: string): void {
+		const landed = this.#landed;
+		if (landed === undefined || this.#morphTarget !== undefined || this.#castAbort) return;
+		const sent = parseShellLine(text);
+		const holds = landed.startsWith("!")
+			? sent !== undefined && sent.command.split(/\s+/, 1)[0] === parseShellLine(landed)?.command.split(/\s+/, 1)[0]
+			: text.trim() !== "" && stillThePrompt(landed, text);
+		if (holds) return;
+		this.#landed = undefined;
+		this.deps.ui.setLine(undefined);
+	}
 
 	/** Saved spells of `kind` (commands by default) matching `query`; an unreadable book reports once and matches nothing. */
 	find<K extends SpellKind = "command">(query: string, limit?: number, kind?: K): SpellMatch<SpellOf<K>>[] {
@@ -125,6 +144,7 @@ export class Spellbook {
 			this.#save(pending.words, "prompt", text.trim());
 		}
 		if (!shell) this.#pending = undefined;
+		this.#landed = undefined;
 		this.deps.ui.setLine(undefined);
 		return undefined;
 	}
@@ -195,6 +215,7 @@ export class Spellbook {
 			return;
 		}
 		ui.setLine(landing.line);
+		this.#landed = landing.target;
 		this.#pending = landing.pending;
 		this.morph(typed, landing.target);
 	}
@@ -225,11 +246,13 @@ export class Spellbook {
 		if (pick.kind === "prompt") {
 			this.#pending = { kind: "prompt", words: pick.words, text: pick.prompt };
 			ui.setLine(`${paint("accent", "✦")} ${saved}`);
+			this.#landed = pick.prompt;
 			this.morph(ui.getText(), pick.prompt);
 			return;
 		}
 		this.#pending = { kind: "command", words: pick.words, sigil: pick.sigil, command: pick.command };
 		ui.setLine(plainWordsLine({ text: pick.command, explain: saved, destructive: false }, paint));
+		this.#landed = `${pick.sigil}${pick.command}`;
 		this.morph(ui.getText(), `${pick.sigil}${pick.command}`);
 	}
 

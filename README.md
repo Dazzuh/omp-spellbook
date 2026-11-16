@@ -14,7 +14,7 @@ playing only finishes it.
 - `?!! <description>` → `!!<command>` (output kept out of the model's context)
 - A line under the composer says in the model's words what the text does, with a **⚠ Destructive** warning when a
   command deletes, moves over, overwrites, force-pushes or stops something (a local check of the command, plus the
-  model's own flag).
+  model's own flag). It goes away once you clear the composer or replace what landed.
 - Every prompt and command you send after a spell is saved in your **spellbook** under your own words. Next time,
   type `?` (prompts) or `?!` (commands) and a few of those words and press **Tab**: pick the saved one, no model call.
 
@@ -101,7 +101,7 @@ until you press Enter. Its instructions tell it where to look:
 
 - your conversation so far, from the session's own log file;
 - omp's documentation (`omp://`);
-- your skills (`skill://<name>`);
+- your skills (`skill://<name>`), with the folders omp found them in, so it can list them;
 - omp's settings and their current values (`cfg://`);
 - the project you're in.
 

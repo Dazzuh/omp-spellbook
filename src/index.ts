@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentRegistry,
@@ -111,7 +112,12 @@ export default function spellbook(pi: ExtensionAPI): void {
 			session: () => (ctx.model ? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() } : undefined),
 		});
 	/** Where the cast model can look things up: this session's log and the project. */
-	const places = (ctx: ExtensionContext): LookupPlaces => ({ sessionLog: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd });
+	const places = (ctx: ExtensionContext): LookupPlaces => ({
+		sessionLog: ctx.sessionManager.getSessionFile(),
+		cwd: ctx.cwd,
+		// The folders omp found the user's skills in (its own discovery), not the skills themselves.
+		skillFolders: [...new Set(getActiveSkills().filter(skill => !skill.hide).map(skill => path.dirname(skill.baseDir)))],
+	});
 	/** One cast: a read-only helper session on the cast model answers `description` under `system`. */
 	const cast = async (
 		system: string,
@@ -169,6 +175,8 @@ export default function spellbook(pi: ExtensionAPI): void {
 		clearTimeout: handle => live?.clearTimer(handle as never),
 		paint,
 	});
+
+	display.onText = text => book.onTextChange(text);
 
 	pi.on("session_start", async (_event, ctx) => {
 		book.dispose();

@@ -516,6 +516,88 @@ describe("editor hooks", () => {
 	});
 });
 
+describe("composer changes", () => {
+	test("omp's onChange, set after the hooks, still runs, and Spellbook hears each change after it", () => {
+		const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
+		const heard: string[] = [];
+		display.onText = text => heard.push(`spellbook:${text}`);
+		const editor: HookableEditor = {
+			invalidate() {},
+			decorateText: undefined,
+			describeDecorations: undefined,
+			describe: () => "node",
+		};
+		hookEditor(editor, display, (_c, t) => t);
+		// omp's input controller assigns its handler once the editor exists.
+		editor.onChange = text => heard.push(`omp:${text}`);
+		editor.onChange?.("? hi");
+		editor.onChange?.("");
+		expect(heard).toEqual(["omp:? hi", "spellbook:? hi", "omp:", "spellbook:"]);
+	});
+});
+
+describe("the line under the composer", () => {
+	/** Edit the composer as the user would: the text changes, then omp's editor reports it. */
+	const edit = (text: string) => {
+		h.state.text = text;
+		h.book.onTextChange(text);
+	};
+
+	test("wiping a landed prompt clears its line; an edit that keeps the prompt keeps it", async () => {
+		h = harness({ reduceMotion: true });
+		h.submit("? review this repo");
+		await h.flush();
+		expect(h.state.line).toContain(PROMPT.explain);
+		edit(`${PROMPT.text} Focus on src/.`);
+		expect(h.state.line).toContain(PROMPT.explain);
+		edit("");
+		expect(h.state.line).toBeUndefined();
+	});
+
+	test("a landed command's line stays while it's the same program and goes when it isn't or is wiped", async () => {
+		h = harness({ reduceMotion: true });
+		h.submit("?! list files here");
+		await h.flush();
+		edit("!ls -la src");
+		expect(h.state.line).toContain("Lists every file here.");
+		edit("!git status");
+		expect(h.state.line).toBeUndefined();
+
+		h.submit("?! list files here");
+		await h.flush();
+		edit("");
+		expect(h.state.line).toBeUndefined();
+	});
+
+	test("the spell line waiting on the model and the morph frames never clear it", async () => {
+		const gate = Promise.withResolvers<void>();
+		h = harness({ gate: gate.promise });
+		h.submit("?! list files here");
+		await Promise.resolve();
+		h.book.onTextChange("");
+		expect(h.state.line).toContain("finding the command");
+		gate.resolve();
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		// Frames are drawn now; each one reaches onTextChange as omp's editor would report it.
+		while (h.state.timers.length) {
+			h.state.timers.shift()!();
+			h.book.onTextChange(h.state.text);
+		}
+		expect(h.state.text).toBe("!ls -la");
+		expect(h.state.line).toContain("Lists every file here.");
+	});
+
+	test("sending a landed spell after the line went still saves it", async () => {
+		h = harness({ reduceMotion: true });
+		h.submit("? review this repo");
+		await h.flush();
+		edit("");
+		edit(PROMPT.text);
+		h.submit(PROMPT.text);
+		expect(readBook(path.join(h.dir, "book.json")).entries).toMatchObject([{ kind: "prompt", words: "review this repo" }]);
+	});
+});
+
 describe("casting state", () => {
 	test("the spell line is marked as casting while the model answers, and not once the command lands", async () => {
 		const { promise: gate, resolve: release } = Promise.withResolvers<void>();

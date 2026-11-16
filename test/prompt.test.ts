@@ -8,7 +8,11 @@ const GIT_BASH: ShellInfo = {
 	family: "bash",
 	notes: ["omp's embedded shell has these built in on every OS: ls, find."],
 };
-const PLACES = { sessionLog: "C:/Users/u/.omp/agent/sessions/x/1.jsonl", cwd: "C:/work/project" };
+const PLACES = {
+	sessionLog: "C:/Users/u/.omp/agent/sessions/x/1.jsonl",
+	cwd: "C:/work/project",
+	skillFolders: ["C:/Users/u/.agents/skills", "C:/work/agent-kit/skills"],
+};
 
 describe("system prompts", () => {
 	test("both name every place the model can look: the session log, omp://, skill://, cfg:// and the project", () => {
@@ -18,11 +22,15 @@ describe("system prompts", () => {
 			expect(system).toContain("skill://");
 			expect(system).toContain("cfg://");
 			expect(system).toContain(PLACES.cwd);
+			// Where the skills are, never which: the model lists and reads them itself.
+			expect(system).toContain("C:/Users/u/.agents/skills, C:/work/agent-kit/skills");
 		}
 	});
 
-	test("a session without a log file leaves the log line out", () => {
-		expect(promptSystemPrompt({ sessionLog: undefined, cwd: "/p" })).not.toContain("JSONL");
+	test("a session without a log file or skills leaves those lines' paths out", () => {
+		const system = promptSystemPrompt({ sessionLog: undefined, cwd: "/p", skillFolders: [] });
+		expect(system).not.toContain("JSONL");
+		expect(system).toContain("- the user's skills: skill://<name> reads one\n");
 	});
 
 	test("? asks for the text and its explanation; ?! adds the destructive flag and says where the line runs", () => {

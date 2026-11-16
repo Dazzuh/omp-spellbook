@@ -6,6 +6,8 @@ export interface LookupPlaces {
 	sessionLog: string | undefined;
 	/** The project folder omp runs in. */
 	cwd: string;
+	/** The folders the user's skills sit in, each skill a subfolder with a SKILL.md. */
+	skillFolders: readonly string[];
 }
 
 /** The model's reply for `?`: the prompt to land and what sending it does. */
@@ -24,7 +26,7 @@ function lookupLines(places: LookupPlaces): string[] {
 		"You can look things up before you answer, with the read, grep and glob tools:",
 		...(places.sessionLog ? [`- the user's conversation with omp so far, a JSONL log: ${places.sessionLog}`] : []),
 		"- omp's documentation: omp:// lists the pages, omp://<page> reads one",
-		"- the user's skills: skill://<name>",
+		`- the user's skills: skill://<name> reads one${places.skillFolders.length ? `; each is a folder with a SKILL.md in ${places.skillFolders.join(", ")}` : ""}`,
 		"- omp's settings and their current values: cfg://, or cfg://<key>",
 		`- the project: ${places.cwd}`,
 	];
