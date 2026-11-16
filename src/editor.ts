@@ -14,6 +14,8 @@ export interface MorphDisplay {
 	casting: string | undefined;
 	/** Ask omp for a new frame, once the editor is installed. */
 	repaint?: () => void;
+	/** Called with the composer text after every change to it (typing, deleting, setText). */
+	onText?: (text: string) => void;
 }
 
 /** Theme colour per mark kind; the same names serve ANSI (`theme.fg`) and Tern decorations. */
@@ -82,6 +84,8 @@ export interface HookableEditor {
 	describe(cx: { reduceMotion?: boolean }): unknown;
 	getText?(): string;
 	focused?: boolean;
+	/** Set by omp's input controller after the editor is built; Spellbook listens alongside it. */
+	onChange?: (text: string) => void;
 }
 
 /** How the spell line is drawn in a plain terminal and whether it may move. */
@@ -275,6 +279,21 @@ export function hookEditor(
 		}
 		return baseDescribe.call(this, cx);
 	};
+	// omp assigns `onChange` once the editor exists (its input controller); every assignment is
+	// wrapped, so omp's handler runs as before and Spellbook hears each change after it.
+	let ompOnChange = editor.onChange;
+	const onChange = (text: string) => {
+		ompOnChange?.(text);
+		display.onText?.(text);
+	};
+	Object.defineProperty(editor, "onChange", {
+		configurable: true,
+		enumerable: true,
+		get: () => onChange,
+		set: (fn: ((text: string) => void) | undefined) => {
+			ompOnChange = fn;
+		},
+	});
 	display.editor = editor;
 }
 

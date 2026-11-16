@@ -14,8 +14,6 @@ export interface SpellbookSettings {
 	style: MorphStyle;
 	/** Spellbook file; `~` expands to the home folder, relative paths resolve against the Spellbook folder. */
 	bookPath: string;
-	/** How many recent `!` commands go into the request as context. */
-	recentCommands: number;
 }
 
 export interface SettingsLocation {
@@ -31,7 +29,7 @@ export function settingsLocation(agentDir: string): SettingsLocation {
 }
 
 export function defaultSettings(): SpellbookSettings {
-	return { style: "diff", bookPath: "book.json", recentCommands: 5 };
+	return { style: "diff", bookPath: "book.json" };
 }
 
 /** Canonical style name for a value, or undefined when it is none of the styles or their letters. */
@@ -68,9 +66,6 @@ export function readSettings(
 	}
 	const bookPath = env.SPELLBOOK_BOOK ?? raw.bookPath;
 	if (typeof bookPath === "string" && bookPath.trim()) settings.bookPath = bookPath.trim();
-	if (typeof raw.recentCommands === "number" && raw.recentCommands >= 0) {
-		settings.recentCommands = Math.min(20, Math.floor(raw.recentCommands));
-	}
 	return { settings, problems };
 }
 

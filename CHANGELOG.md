@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0
+
+- **Prompt spells.** `? <description>` writes the prompt omp's agent needs for it, using omp's docs, your skills and
+  magic keywords where they help. It is only ever a prompt: a question about a setting becomes a prompt asking omp,
+  whose agent reads `cfg://` and asks before changing anything. It morphs in like a command and waits for Enter.
+- **The model looks things up itself.** Each cast (`?`, `?!` and `?!!` alike) runs the model in a throwaway omp
+  session kept in memory, with omp's `read`, `grep` and `glob` as its only tools (no edit, write, shell or subagent
+  tool): it can read your conversation so far from the session's log, omp's docs (`omp://`), your skills
+  (`skill://`), omp's settings and current values (`cfg://`) and the project. Spellbook packs no context for it.
+- **The model runs as its role is configured**, thinking level included: the `spellbook` role, else `smol`, else the
+  session's model and thinking level. Spellbook sets no reasoning, temperature or token limits of its own.
+- What lands is the model's text exactly as it wrote it; the line under the composer is its own explanation, with the
+  ⚠ warning for destructive commands as before. Its reply is a small JSON envelope that only separates those parts.
+  The line goes away once the composer is cleared or no longer holds what landed.
+- The model is told which folders your skills are in (from omp's own skill discovery), so it can list and read them.
+- `?!` no longer sends recent `!` commands, SSH host aliases or saved commands, and no longer strips `$`, `!` or
+  backticks from the answer; the `recentCommands` setting is gone.
+- **Shell commands moved to `?!`** (`!<command>`) and `?!!` (`!!<command>`); `??` is no longer a spell.
+- Prompt spells you send are saved in the spellbook like commands; Tab on a `?` line offers saved prompts, Tab on a
+  `?!`/`?!!` line saved commands. The spellbook file is now version 2 (`entries`, each with a `kind`); a 0.1 file is
+  read as commands and saved back as version 2.
+- The Tern half: the chip stands in for the typed prefix. `?` shows **✦ spellbook** in the accent; `?!` and `?!!`
+  show **✦ spellbook !** and **✦ spellbook !!** in Tern's success green, glow included.
+- `/spellbook prompt <description>` casts a prompt spell; headless (`omp -p`), it and `/spellbook cast` print the answer
+  as JSON with the cast time. `/spellbook list` shows both kinds.
+- README examples and demo in dark mode.
+
 ## 0.1.1
 
 - A `?` line now looks like a spell while you type it: the `?` in your theme's accent, the description shimmering

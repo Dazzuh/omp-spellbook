@@ -51,7 +51,7 @@ jobs:
           omp --version
           out=$(omp --no-extensions -e . --model "$MODEL" -p "/spellbook" 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
-          grep -q "Tab on a \`?!\` line" <<<"$out"
+          grep -q "Tab on a \`?\` or \`?!\` line" <<<"$out"
 
       - name: Install from GitHub the way the README says
         if: github.event_name != 'pull_request'
@@ -64,7 +64,7 @@ jobs:
           grep -q "omp-spellbook" plugins.txt
           out=$(omp --model "$MODEL" -p "/spellbook" 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
-          grep -q "Tab on a \`?!\` line" <<<"$out"
+          grep -q "Tab on a \`?\` or \`?!\` line" <<<"$out"
 
       - name: Live commands in this OS's ! shell
         if: env.LIVE_KEY != ''
@@ -73,5 +73,5 @@ jobs:
           ANTHROPIC_API_KEY: ${{ env.LIVE_KEY }}
           SPELLBOOK_LIVE: "1"
           SPELLBOOK_OMP: omp
-          SPELLBOOK_MODEL: ${{ env.MODEL }}
+          SPELLBOOK_MODEL: ${{ env.MODEL }}:low
         run: bun test test/live.test.ts

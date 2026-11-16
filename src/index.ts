@@ -1,15 +1,25 @@
-import * as os from "node:os";
-import { completeSimple } from "@oh-my-pi/pi-ai";
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { getAgentDir, settings as ompSettings, theme } from "@oh-my-pi/pi-coding-agent";
+import {
+	AgentRegistry,
+	createAgentSession,
+	getAgentDir,
+	SessionManager,
+	Settings,
+	theme,
+} from "@oh-my-pi/pi-coding-agent";
+import { getActiveRules, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
+import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
+import { getActiveSkills, type Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { isNativeRendering, motionEffectsEnabled } from "@oh-my-pi/pi-tui";
 import { wrapAutocomplete } from "./autocomplete";
 import { installEditorHooks, type MorphDisplay, type SpellLook } from "./editor";
-import { pickModel, replyText } from "./model";
+import { type HelperSdk, runHelper } from "./helper";
+import { pickModel } from "./model";
 import { parseCast } from "./parse";
-import { describeOs, detectShell, liveProbe, readSshHosts, type ShellInfo } from "./platform";
-import { buildSystemPrompt, buildUserMessage, parseAnswer } from "./prompt";
+import { describeOs, detectShell, liveProbe, type ShellInfo } from "./platform";
+import { type LookupPlaces, parsePromptReply, parseShellReply, promptSystemPrompt, shellSystemPrompt } from "./prompt";
 import {
 	MORPH_STYLES,
 	parseStyle,
@@ -21,8 +31,16 @@ import {
 } from "./settings";
 import { Spellbook } from "./spellbook";
 
-/** Output budget for one answer: a command line and a sentence. */
-const MAX_TOKENS = 400;
+const SDK: HelperSdk = {
+	createAgentSession,
+	inMemorySessionManager: cwd => SessionManager.inMemory(cwd),
+	// Each cast gets its own registry, so its agent id never meets the user's session's.
+	agentRegistry: () => new AgentRegistry(),
+	// The same array, not a copy: omp tells whether the user's session still owns the snapshot by identity.
+	activeSkills: () => getActiveSkills() as Skill[],
+	activeRules: getActiveRules,
+	restoreRules: setActiveRules,
+};
 
 function paint(color: string, text: string): string {
 	try {
@@ -50,28 +68,13 @@ function currentShell(): ShellInfo {
 	let shellPath: string | undefined;
 	let ompShell: string | undefined;
 	try {
-		const value = lookup("shellPath")?.get(ompSettings);
+		const value = lookup("shellPath")?.get(Settings.instance);
 		if (typeof value === "string" && value) shellPath = value;
 	} catch {}
 	try {
-		ompShell = ompSettings.getShellConfig().shell;
+		ompShell = Settings.instance.getShellConfig().shell;
 	} catch {}
 	return detectShell(liveProbe({ shellPath, ompShell }));
-}
-
-/** The last `count` commands run with `!`/`!!` on this session's branch. */
-function recentBashCommands(ctx: ExtensionContext, count: number): string[] {
-	if (count <= 0) return [];
-	const commands: string[] = [];
-	for (const entry of ctx.sessionManager.getBranch() as ReadonlyArray<{
-		type: string;
-		message?: { role?: string; command?: unknown };
-	}>) {
-		if (entry.type === "message" && entry.message?.role === "bashExecution") {
-			if (typeof entry.message.command === "string") commands.push(entry.message.command);
-		}
-	}
-	return commands.slice(-count);
 }
 
 export default function spellbook(pi: ExtensionAPI): void {
@@ -96,6 +99,49 @@ export default function spellbook(pi: ExtensionAPI): void {
 		if (!live) throw new Error("Spellbook used before session start");
 		return live;
 	};
+	/** The cast model as omp's roles configure it: role `spellbook`, else `smol`, else the session's model and thinking level. */
+	const castModel = (ctx: ExtensionContext) =>
+		pickModel({
+			role: roles => {
+				try {
+					return resolveRoleSelection(roles, Settings.instance, ctx.modelRegistry.getAvailable());
+				} catch {
+					return undefined;
+				}
+			},
+			session: () => (ctx.model ? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() } : undefined),
+		});
+	/** Where the cast model can look things up: this session's log and the project. */
+	const places = (ctx: ExtensionContext): LookupPlaces => ({
+		sessionLog: ctx.sessionManager.getSessionFile(),
+		cwd: ctx.cwd,
+		// The folders omp found the user's skills in (its own discovery), not the skills themselves.
+		skillFolders: [...new Set(getActiveSkills().filter(skill => !skill.hide).map(skill => path.dirname(skill.baseDir)))],
+	});
+	/** One cast: a read-only helper session on the cast model answers `description` under `system`. */
+	const cast = async (
+		system: string,
+		description: string,
+		signal: AbortSignal,
+	): Promise<{ reply: string; model: string; lookups: string[] }> => {
+		const ctx = ctxNow();
+		const picked = castModel(ctx);
+		if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
+		const { reply, lookups } = await runHelper(
+			{
+				cwd: ctx.cwd,
+				model: picked.model,
+				thinkingLevel: picked.thinkingLevel,
+				settings: Settings.instance,
+				modelRegistry: ctx.modelRegistry,
+				system,
+				description,
+				signal,
+			},
+			SDK,
+		);
+		return { reply, model: `${picked.model.provider}/${picked.model.id}`, lookups };
+	};
 
 	const book = new Spellbook({
 		ui: {
@@ -109,36 +155,28 @@ export default function spellbook(pi: ExtensionAPI): void {
 		settings: () => current.settings,
 		bookFile: () => resolveBookPath(location, current.settings.bookPath),
 		reduceMotion,
-		context: () => ({
-			cwd: ctxNow().cwd,
-			os: describeOs(),
-			shell: currentShell(),
-			sshHosts: readSshHosts(os.homedir()),
-			recentCommands: recentBashCommands(ctxNow(), current.settings.recentCommands),
-		}),
-		ask: async (packet, signal) => {
-			const ctx = ctxNow();
-			const picked = pickModel(ctx.models);
-			if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
-			const model = picked.model;
-			const apiKey = await ctx.modelRegistry.getApiKey(model);
-			if (!apiKey) throw new Error(`no credential for ${model.provider}; log in with /login`);
-			const message = await completeSimple(
-				model,
-				{
-					systemPrompt: [buildSystemPrompt(packet.shell)],
-					messages: [{ role: "user", content: buildUserMessage(packet), timestamp: Date.now() }],
-				},
-				{ apiKey, maxTokens: MAX_TOKENS, disableReasoning: true, temperature: 0, signal },
+		ask: async (description, signal) => {
+			const { reply, model, lookups } = await cast(
+				shellSystemPrompt(places(ctxNow()), currentShell(), describeOs()),
+				description,
+				signal,
 			);
-			const answer = parseAnswer(replyText(message));
-			if (!answer) throw new Error(`${model.id} gave no command`);
-			return { answer, model: `${model.provider}/${model.id}` };
+			const answer = parseShellReply(reply);
+			if (!answer) throw new Error(`${model} gave no command: ${reply}`);
+			return { answer, model, lookups };
+		},
+		askPrompt: async (description, signal) => {
+			const { reply, model, lookups } = await cast(promptSystemPrompt(places(ctxNow())), description, signal);
+			const answer = parsePromptReply(reply);
+			if (!answer) throw new Error(`${model} gave no prompt: ${reply}`);
+			return { answer, model, lookups };
 		},
 		setTimeout: (fn, ms) => ctxNow().setTimeout(fn, ms),
 		clearTimeout: handle => live?.clearTimer(handle as never),
 		paint,
 	});
+
+	display.onText = text => book.onTextChange(text);
 
 	pi.on("session_start", async (_event, ctx) => {
 		book.dispose();
@@ -148,7 +186,7 @@ export default function spellbook(pi: ExtensionAPI): void {
 		// Re-added on every session_start (/new, resume); wrapAutocomplete skips a provider it already wrapped.
 		ctx.ui.addAutocompleteProvider(provider =>
 			wrapAutocomplete(provider, {
-				find: query => book.find(query),
+				find: (query, kind) => book.find(query, undefined, kind),
 				onPick: pick => book.pick(pick),
 			}),
 		);
@@ -172,9 +210,9 @@ export default function spellbook(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("spellbook", {
-		description: "Spellbook: settings, saved commands, or cast <description>",
+		description: "Spellbook: settings, saved spells, cast <description> (a command) or prompt <description>",
 		getArgumentCompletions: prefix =>
-			["style", "book", "list", "cast", ...MORPH_STYLES.map(s => `style ${s}`)]
+			["style", "book", "list", "cast", "prompt", ...MORPH_STYLES.map(s => `style ${s}`)]
 				.filter(option => option.startsWith(prefix))
 				.map(option => ({ value: option, label: option })),
 		handler: async (args, ctx) => {
@@ -207,42 +245,51 @@ export default function spellbook(pi: ExtensionAPI): void {
 					return;
 				}
 				case "list": {
-					const matches = book.find(arg, 20);
-					say(
-						matches.length
-							? matches.map(m => `${m.spell.words} → ${m.spell.command}`).join("\n")
-							: "No saved commands match.",
-					);
+					const commands = book.find(arg, 20).map(m => `${m.spell.words} → ${m.spell.command}`);
+					const prompts = book
+						.find(arg, 20, "prompt")
+						.map(m => `${m.spell.words} → (prompt) ${m.spell.prompt.split(/\r?\n/, 1)[0]}`);
+					const lines = [...commands, ...prompts];
+					say(lines.length ? lines.join("\n") : "No saved spells match.");
 					return;
 				}
-				case "cast": {
-					const request = parseCast(`?! ${arg}`);
-					if (request?.kind !== "shell") {
-						say("Usage: /spellbook cast <description>", "warning");
+				case "cast":
+				case "prompt": {
+					const kind = sub.toLowerCase() === "cast" ? "shell" : "prompt";
+					const request = parseCast(`${kind === "shell" ? "?!" : "?"} ${arg}`);
+					if (request?.kind !== kind) {
+						say(`Usage: /spellbook ${sub.toLowerCase()} <description>`, "warning");
 						return;
 					}
 					if (ctx.hasUI) {
 						await book.cast(request);
 						return;
 					}
-					const spells = book.find(request.description, 5).map(m => ({ words: m.spell.words, command: m.spell.command }));
-					const result = await book.deps.ask(
-						{ ...book.deps.context(), description: request.description, spells },
-						AbortSignal.timeout(60_000),
+					const started = Date.now();
+					const signal = AbortSignal.timeout(300_000);
+					const result =
+						kind === "shell"
+							? await book.deps.ask(request.description, signal)
+							: await book.deps.askPrompt(request.description, signal);
+					const ms = Date.now() - started;
+					process.stdout.write(
+						`${JSON.stringify({ ...result.answer, model: result.model, ms, lookups: result.lookups ?? [] })}\n`,
 					);
-					process.stdout.write(`${JSON.stringify({ ...result.answer, model: result.model })}\n`);
 					return;
 				}
 				default: {
-					const picked = pickModel(ctx.models);
+					const picked = castModel(ctx);
+					const model = picked
+						? `${picked.model.provider}/${picked.model.id}${picked.thinkingLevel ? `:${picked.thinkingLevel}` : ""} (via ${picked.via})`
+						: "none";
 					say(
 						[
 							`Style: ${current.settings.style}   (/spellbook style diff|decode|rewind|none)`,
 							`File: ${resolveBookPath(location, current.settings.bookPath)}`,
 							`Settings: ${location.file}`,
-							`Model: ${picked ? `${picked.model.provider}/${picked.model.id} (via ${picked.via})` : "none"}`,
+							`Model: ${model}`,
 							`Shell: ${currentShell().shell}`,
-							"Type `?! <description>` for a command, `?!! ` for `!!`; Tab on a `?!` line lists saved ones.",
+							"Type `? <description>` for an omp prompt, `?! <description>` for a command (`?!!` for `!!`); Tab on a `?` or `?!` line lists saved ones.",
 						].join("\n"),
 					);
 				}

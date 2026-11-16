@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { destructiveReason } from "../src/danger";
-import { detectShell, parseSshHosts, type ShellProbe } from "../src/platform";
+import { detectShell, type ShellProbe } from "../src/platform";
 
 function probe(over: Partial<ShellProbe> & { files?: string[]; path?: Record<string, string> }): ShellProbe {
 	const files = new Set(over.files ?? []);
@@ -73,13 +73,6 @@ describe("detectShell (mirrors omp 18.20.2)", () => {
 			shell: "/bin/sh",
 			family: "sh",
 		});
-	});
-});
-
-describe("parseSshHosts", () => {
-	test("reads Host aliases from a CRLF config, skipping wildcards and duplicates", () => {
-		const config = "Host donnager donnager-root\r\n  HostName 10.0.0.2\r\nHost *\r\n  User x\r\nhost  pi !bad\r\nHost donnager\r\n";
-		expect(parseSshHosts(config)).toEqual(["donnager", "donnager-root", "pi"]);
 	});
 });
 
