@@ -1,5 +1,5 @@
-import type { SpellMatch } from "./book";
-import { castQuery } from "./parse";
+import type { Spell, SpellKind, SpellMatch } from "./book";
+import { type CastQuery, castQuery } from "./parse";
 
 export interface CompletionItem {
 	value: string;
@@ -25,56 +25,93 @@ export interface CompletionProvider {
 	): { lines: string[]; cursorLine: number; cursorCol: number; onApplied?: () => void };
 }
 
-export interface SpellPick {
-	/** The `?` line as typed. */
-	from: string;
-	sigil: "!" | "!!";
-	words: string;
-	command: string;
-}
+/** A saved spell picked from the Tab list: a command for a `?!`/`?!!` line, a prompt for a `?` line. */
+export type SpellPick =
+	| {
+			kind: "command";
+			/** The `?!`/`?!!` line as typed. */
+			from: string;
+			sigil: "!" | "!!";
+			words: string;
+			command: string;
+	  }
+	| {
+			kind: "prompt";
+			/** The `?` line as typed. */
+			from: string;
+			words: string;
+			prompt: string;
+	  };
 
 export interface SpellCompletionDeps {
-	find(query: string): SpellMatch[];
-	/** Called once the editor applied a pick; puts the command in the composer. */
+	/** Saved spells of `kind` matching `query`: commands for `?!`/`?!!`, prompts for `?`. */
+	find(query: string, kind: SpellKind): SpellMatch<Spell>[];
+	/** Called once the editor applied a pick; puts the spell in the composer. */
 	onPick(pick: SpellPick): void;
 }
 
 const VALUE_PREFIX = "spellbook:";
+/** A saved prompt shows this many characters of its first line beside its words. */
+const PROMPT_PREVIEW = 80;
 
-/** The whole composer text when the composer is a single `?` line with the cursor on it. */
-function castLine(lines: string[], cursorLine: number): string | undefined {
+/** A single-line spell composer with the cursor on it: its text, kind and the words typed so far. */
+function castLine(lines: string[], cursorLine: number): { text: string; cast: CastQuery } | undefined {
 	if (lines.length !== 1 || cursorLine !== 0) return undefined;
 	const text = lines[0]!;
-	return castQuery(text) ? text : undefined;
+	const cast = castQuery(text);
+	return cast ? { text, cast } : undefined;
+}
+
+/** The Tab row and the pick for one saved spell offered on `line`. */
+function offer(text: string, cast: CastQuery, spell: Spell): { description: string; pick: SpellPick } | undefined {
+	if (cast.kind === "shell" && spell.kind === "command") {
+		return {
+			description: spell.command,
+			pick: { kind: "command", from: text, sigil: cast.sigil, words: spell.words, command: spell.command },
+		};
+	}
+	if (cast.kind === "prompt" && spell.kind === "prompt") {
+		const first = spell.prompt.split(/\r?\n/, 1)[0]!;
+		const chars = Array.from(first);
+		const description = chars.length > PROMPT_PREVIEW ? `${chars.slice(0, PROMPT_PREVIEW - 1).join("")}…` : first;
+		return { description, pick: { kind: "prompt", from: text, words: spell.words, prompt: spell.prompt } };
+	}
+	return undefined;
 }
 
 /** Providers this module already wrapped, so a factory re-added on session_start doesn't stack. */
 const wrapped = new WeakSet<object>();
 
 /**
- * Wrap omp's autocomplete provider: Tab on a `?` line lists saved spells matching the words typed so
- * far; picking one hands it to `onPick` with no model call. Anything else goes to `current`.
+ * Wrap omp's autocomplete provider: Tab on a `?!`/`?!!` line lists saved commands, Tab on a `?`
+ * line saved prompt spells, matching the words typed so far; picking one hands it to `onPick`
+ * with no model call. Anything else goes to `current`.
  */
 export function wrapAutocomplete<P extends CompletionProvider>(current: P, deps: SpellCompletionDeps): P {
 	if (wrapped.has(current)) return current;
 	let shown = new Map<string, SpellPick>();
 	const overrides: Partial<CompletionProvider> = {
 		async getForceFileSuggestions(lines, cursorLine, cursorCol, signal) {
-			const text = castLine(lines, cursorLine);
-			if (text === undefined) {
+			const line = castLine(lines, cursorLine);
+			if (line === undefined) {
 				return current.getForceFileSuggestions
 					? current.getForceFileSuggestions(lines, cursorLine, cursorCol, signal)
 					: null;
 			}
-			const cast = castQuery(text)!;
-			const matches = deps.find(cast.query);
-			shown = new Map();
-			const items = matches.map((match, index) => {
-				const value = `${VALUE_PREFIX}${index}`;
-				shown.set(value, { from: text, sigil: cast.sigil, words: match.spell.words, command: match.spell.command });
-				return { value, label: match.spell.words, description: match.spell.command };
-			});
-			return items.length > 0 ? { items, prefix: text.slice(0, cursorCol) } : null;
+			const { text, cast } = line;
+			const picks = new Map<string, SpellPick>();
+			const items: CompletionItem[] = [];
+			for (const match of deps.find(cast.query, cast.kind === "shell" ? "command" : "prompt")) {
+				// Each kind only ever offers its own: a saved command never lands on a `?` line.
+				const row = offer(text, cast, match.spell);
+				if (!row) continue;
+				const value = `${VALUE_PREFIX}${items.length}`;
+				picks.set(value, row.pick);
+				items.push({ value, label: match.spell.words, description: row.description });
+			}
+			if (items.length === 0) return null;
+			shown = picks;
+			return { items, prefix: text.slice(0, cursorCol) };
 		},
 		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
 			if (castLine(lines, cursorLine) !== undefined) return true;

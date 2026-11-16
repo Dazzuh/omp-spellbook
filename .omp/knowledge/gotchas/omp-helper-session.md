@@ -1,0 +1,15 @@
+---
+description: "gotchas, omp helper session, running a model in an in-process omp session from an extension (omp 18.20.2): createAgentSession with SessionManager.inMemory, restrictToolNames, bindProcessState false, a private AgentRegistry; it still publishes skills and rules process-wide, so pass the user's skills array and restore getActiveRules; systemPrompt replaces omp's skill list and bare skill:// errors; omp's read also reaches http, ssh://, issue:// and absolute paths; role thinking level via resolveRoleSelection; editor onChange is assigned by omp after the editor is built"
+---
+
+# Running a model in a helper omp session from an extension (omp 18.20.2)
+
+- `createAgentSession` (package root) with `sessionManager: SessionManager.inMemory(cwd)` (otherwise it saves a session file beside the user's), `toolNames` + `restrictToolNames: true`, `bindProcessState: false`, `disableExtensionDiscovery`, MCP/LSP/IRC off, `hasUI: false`, and a fresh `new AgentRegistry()` with its own `agentId` (the global registry admits one "Main"). Read the final text from `session.messages` after `await session.prompt(...)`.
+- It still overwrites omp's process-wide skill and rule snapshots even with `bindProcessState: false` (`sdk.ts` ~2864-2876, ~4366). The user's session tracks its skill snapshot **by identity** (`session-tools.ts` ~754). Pass `skills: getActiveSkills()` (same array, from `@oh-my-pi/pi-coding-agent/extensibility/skills`) and put `getActiveRules()` back with `setActiveRules` (`capability/rule`) after dispose.
+- A `systemPrompt` replaces omp's rendered prompt, skill list included, and a bare `skill://` throws "requires a skill name". To let the model find skills, name the folders: `path.dirname(skill.baseDir)` of the non-hidden active skills.
+- `cfg://` reads work from a helper session (only writes are gated), but omp doesn't advertise the scheme there: name it in the prompt.
+- Model and thinking level of a role: `resolveRoleSelection(["spellbook","smol"], Settings.instance, ctx.modelRegistry.getAvailable())` (`config/model-resolver`); `ctx.models.resolve` drops the level. Use `Settings.instance`, not the exported `settings` proxy.
+- Stock `read` reaches more than files: web pages (fetch services), `ssh://` (exec-tier), `vault://` (Obsidian CLI), `issue://`/`pr://` (runs `gh`, writes omp's GitHub cache), any absolute path; no approval under the default `tools.approvalMode: yolo`.
+- A user message containing `ultrathink`/`chillax` changes the helper's thinking level and injects omp's notice (magic keywords apply to helper prompts too).
+- omp's input controller assigns `editor.onChange` after the editor component is built (`input-controller.ts` ~820); to hear composer changes, wrap the property with an accessor in the editor factory.
+- The omp ref guard on this public repo rejects edits containing some words that look like Kata ids (it rejected a comment containing "never count"); reword.

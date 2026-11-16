@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { align, morphFrames } from "../src/morph";
 import { MORPH_STYLES } from "../src/settings";
 
-const FROM = "? restart wings and show its last 50 log lines";
+const FROM = "?! restart wings and show its last 50 log lines";
 const TO = "!ssh donnager-root 'systemctl restart wings && journalctl -u wings -n 50'";
 
 function seeded(seed: number): () => number {
@@ -18,9 +18,10 @@ describe("morphFrames", () => {
 		test(`${style} ends on exactly the command, uncoloured`, () => {
 			for (const [from, to] of [
 				[FROM, TO],
-				["?? list files here", "!!ls -la"],
-				["? 列出文件 😀", "!ls 😀"],
-				["? x", "!a-much-longer-command --with flags | and pipes > out.txt"],
+				["?!! list files here", "!!ls -la"],
+				["?! 列出文件 😀", "!ls 😀"],
+				["?!x", "!a-much-longer-command --with flags | and pipes > out.txt"],
+				["? review this repo", "please review this repo"],
 			] as const) {
 				const frames = morphFrames(style, from, to, seeded(7));
 				expect(frames.at(-1)).toEqual({ text: to, marks: [] });
@@ -45,8 +46,11 @@ describe("morphFrames", () => {
 		expect(frames.length).toBeGreaterThan(10);
 		const kinds = new Set(frames.flatMap(f => f.marks.map(m => m.kind)));
 		expect(kinds).toEqual(new Set(["gone", "new"]));
-		// The ? stays until the final frame, so omp's bash mode can't repaint the colours mid-morph.
-		expect(frames.slice(0, -1).every(f => f.text.startsWith("? "))).toBe(true);
+		// The ?! stays whole until the final frame, so omp's bash mode can't repaint the colours mid-morph.
+		expect(frames.slice(0, -1).every(f => f.text.startsWith("?! "))).toBe(true);
+		const quiet = morphFrames("diff", "?!! list files here", "!!ls -la");
+		expect(quiet.slice(0, -1).every(f => f.text.startsWith("?!! "))).toBe(true);
+		expect(quiet.slice(0, -1).every(f => f.marks.every(m => m.from >= 4))).toBe(true);
 	});
 
 	test("decode (B) sweeps noise glyphs; rewind (C) erases then types", () => {

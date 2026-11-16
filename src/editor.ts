@@ -1,6 +1,6 @@
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
 import type { Mark } from "./morph";
-import { spellRanges } from "./parse";
+import { spellRanges, type TextRange } from "./parse";
 
 /** Shared between the morph player, the cast and the patched editor. */
 export interface MorphDisplay {
@@ -14,6 +14,8 @@ export interface MorphDisplay {
 	casting: string | undefined;
 	/** Ask omp for a new frame, once the editor is installed. */
 	repaint?: () => void;
+	/** Called with the composer text after every change to it (typing, deleting, setText). */
+	onText?: (text: string) => void;
 }
 
 /** Theme colour per mark kind; the same names serve ANSI (`theme.fg`) and Tern decorations. */
@@ -24,11 +26,33 @@ export const MARK_COLOR: Record<Mark["kind"], string> = {
 };
 
 /**
- * Span tokens on the `?` sigil: accent, plus `mono`, which omp never puts on a composer decoration
- * and which draws nothing visible on its own (tabular figures). The Tern half's sheet finds a spell
- * in the composer by this pair; without the plugin the `?` still shows in accent.
+ * Span tokens on a prompt spell's `?`: accent, plus `mono`, which omp never puts on a composer
+ * decoration and which draws nothing visible on its own (tabular figures). The Tern half's sheet
+ * finds a spell in the composer by this pair; without the plugin the `?` still shows in accent.
  */
 export const SPELL_SIGIL_TOKENS = "accent mono";
+
+/**
+ * Span tokens on a shell spell's `?!` / `?!!`: success (green, where omp's bash command lands) plus
+ * `mono`, a pair omp never emits in the composer; `?!!` adds `strong` so the sheet can tell it apart
+ * (and a plain Tern composer shows it bold).
+ */
+export const SHELL_SIGIL_TOKENS: Readonly<Record<"!" | "!!", string>> = {
+	"!": "success mono",
+	"!!": "success mono strong",
+};
+
+type SpellKind = { kind: "prompt" } | { kind: "shell"; bang: "!" | "!!" };
+
+/** The marker tokens for a spell line's prefix. */
+export function sigilTokens(spell: SpellKind): string {
+	return spell.kind === "prompt" ? SPELL_SIGIL_TOKENS : SHELL_SIGIL_TOKENS[spell.bang];
+}
+
+/** The theme colour a spell line's prefix takes in a plain terminal. */
+export function sigilColor(spell: SpellKind): string {
+	return spell.kind === "prompt" ? "accent" : "success";
+}
 
 /** omp's magic-keyword gradient cadence (`CustomEditor.SHIMMER_FRAME_MS` / `SHIMMER_PERIOD_MS`). */
 export const SHIMMER_FRAME_MS = 70;
@@ -60,6 +84,8 @@ export interface HookableEditor {
 	describe(cx: { reduceMotion?: boolean }): unknown;
 	getText?(): string;
 	focused?: boolean;
+	/** Set by omp's input controller after the editor is built; Spellbook listens alongside it. */
+	onChange?: (text: string) => void;
 }
 
 /** How the spell line is drawn in a plain terminal and whether it may move. */
@@ -74,15 +100,15 @@ export interface SpellLook {
 }
 
 /**
- * Tern decorations for a spell line: the sigil marked for the plugin's sheet, the description in
- * accent shimmering like a magic keyword; while this line is being cast both pulse. Undefined for
- * any other line.
+ * Tern decorations for a spell line: the prefix (and the spaces after it, which the chip stands in
+ * for) marked for the plugin's sheet by kind, the description in accent shimmering like a magic
+ * keyword; while this line is being cast both pulse. Undefined for any other line.
  */
 export function spellDecorations(text: string, state: { casting: boolean; motion: boolean }): Decoration[] | undefined {
 	const spell = spellRanges(text);
 	if (!spell) return undefined;
 	const fx = !state.motion ? undefined : state.casting ? "pulse" : "shimmer";
-	const sigil: Decoration = { ...spell.sigil, s: SPELL_SIGIL_TOKENS };
+	const sigil: Decoration = { ...spell.lead, s: sigilTokens(spell) };
 	if (fx === "pulse") sigil.fx = fx;
 	if (!spell.description) return [sigil];
 	const description: Decoration = { ...spell.description, s: "accent" };
@@ -90,12 +116,15 @@ export function spellDecorations(text: string, state: { casting: boolean; motion
 	return [sigil, description];
 }
 
-/** The `?`/`??` sigil leading a morph frame, so the chip stays until the line turns into `!`. */
-function frameSigil(text: string): { from: number; to: number } | undefined {
-	const match = /^(\s*)(\?\??)(?!\?)/.exec(text);
+/** The spell prefix leading a morph frame, so the chip stays until the line turns into `!`. */
+function frameSigil(text: string): (TextRange & { lead: TextRange; tokens: string; color: string }) | undefined {
+	const match = /^(\s*)\?(!{0,2})(?![?!])([ \t]*)/.exec(text);
 	if (!match) return undefined;
 	const from = match[1]!.length;
-	return { from, to: from + match[2]!.length };
+	const bangs = match[2]!;
+	const to = from + 1 + bangs.length;
+	const kind: SpellKind = bangs ? { kind: "shell", bang: bangs as "!" | "!!" } : { kind: "prompt" };
+	return { from, to, lead: { from, to: to + match[3]!.length }, tokens: sigilTokens(kind), color: sigilColor(kind) };
 }
 
 /** One painted range: `paint` gets the covered slice and its offset into the whole text. */
@@ -203,14 +232,14 @@ export function hookEditor(
 			}));
 			const sigil = frameSigil(frame.text);
 			if (sigil && !ranges.some(r => r.from < sigil.to && r.to > sigil.from)) {
-				ranges.unshift({ ...sigil, paint: slice => paint("accent", slice) });
+				ranges.unshift({ from: sigil.from, to: sigil.to, paint: slice => paint(sigil.color, slice) });
 			}
 			return ranges.length > 0 ? paintRanges(frame.text, ranges, text, context) : text;
 		}
 		const full = editor.getText?.();
 		const spell = full === undefined ? undefined : spellRanges(full);
 		if (full === undefined || !spell || !look) return baseAnsi ? baseAnsi.call(editor, text, context) : text;
-		const ranges: PaintRange[] = [{ ...spell.sigil, paint: slice => paint("accent", slice) }];
+		const ranges: PaintRange[] = [{ ...spell.sigil, paint: slice => paint(sigilColor(spell), slice) }];
 		const words = spell.description;
 		if (words) {
 			const animated = motion() && !look.native() && editor.focused !== false;
@@ -233,10 +262,10 @@ export function hookEditor(
 		// Like omp's own shell mode: the `!`/`!!` sigil hides behind the bash pill.
 		const bang = /^!!?/.exec(frame.text)?.[0].length ?? 0;
 		if (bang > 0) return [{ from: 0, to: bang, s: "hide" }, ...decor];
-		// The `?` keeps its mark through the morph, so the spell's look lasts until the command lands.
+		// The prefix keeps its mark through the morph, so the spell's look lasts until the command lands.
 		const sigil = frameSigil(frame.text);
-		if (sigil && !decor.some(d => d.from < sigil.to && d.to > sigil.from)) {
-			return [{ ...sigil, s: SPELL_SIGIL_TOKENS }, ...decor];
+		if (sigil && !decor.some(d => d.from < sigil.lead.to && d.to > sigil.lead.from)) {
+			return [{ ...sigil.lead, s: sigil.tokens }, ...decor];
 		}
 		return decor;
 	};
@@ -250,6 +279,21 @@ export function hookEditor(
 		}
 		return baseDescribe.call(this, cx);
 	};
+	// omp assigns `onChange` once the editor exists (its input controller); every assignment is
+	// wrapped, so omp's handler runs as before and Spellbook hears each change after it.
+	let ompOnChange = editor.onChange;
+	const onChange = (text: string) => {
+		ompOnChange?.(text);
+		display.onText?.(text);
+	};
+	Object.defineProperty(editor, "onChange", {
+		configurable: true,
+		enumerable: true,
+		get: () => onChange,
+		set: (fn: ((text: string) => void) | undefined) => {
+			ompOnChange = fn;
+		},
+	});
 	display.editor = editor;
 }
 

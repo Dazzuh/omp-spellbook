@@ -1,15 +1,21 @@
 /*
  * Spellbook's look in omp's composer (Tern half).
  *
- * Spellbook (the omp plugin) marks the `?` of a spell line with the span tokens `accent mono`
- * (classes `.sf-t-accent.sf-t-mono`), a pair omp never puts on a composer decoration, and adds
- * `fx: "pulse"` (`.sf-fx-pulse`) while the model answers. These rules key on that mark:
- * a `✦ spellbook` chip where omp's bash chip sits, an accent glow around the composer, and
- * the glow breathing while casting. Colours come from the theme (`--sf-c-accent` is omp's accent).
- * The fallbacks keep the glow whole if a Tern update renames one of omp's composer variables.
+ * Spellbook (the omp plugin) marks the prefix of a spell line (with the spaces after it) by kind,
+ * each a span-token pair omp never puts on a composer decoration:
+ *   `?`   prompt spell                    `accent mono`          .sf-t-accent.sf-t-mono
+ *   `?!`  shell spell, lands as `!`       `success mono`         .sf-t-success.sf-t-mono
+ *   `?!!` shell spell, lands as `!!`      `success mono strong`  .sf-t-success.sf-t-mono.sf-t-strong
+ * and adds `fx: "pulse"` (`.sf-fx-pulse`) while the model answers. These rules key on that mark:
+ * a `✦ spellbook` chip where omp's bash chip sits, standing in for the typed prefix (hidden here,
+ * the way omp hides the `!` behind its bash chip, so without this sheet the prefix stays visible);
+ * a glow around the composer; the glow breathing while casting. Prompt spells take the theme's
+ * accent (`--sf-c-accent`, omp's accent), shell spells its success green (`--ok`), the colour a
+ * landed command takes. The fallbacks keep the glow whole if a Tern update renames a variable.
  */
 
-.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+/* Any spell: the glow, in the kind's colour. */
+.sf-col[data-role^='omp.editor']:has(.sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono)) {
 	--spellbook-accent: var(--sf-c-accent, var(--accent));
 	--spellbook-drop: var(--composer-shadow, 0 0 0 transparent);
 	--spellbook-hi: var(--glass-hi, transparent);
@@ -21,11 +27,15 @@
 		inset 0 1px 0 var(--spellbook-hi);
 }
 
-[data-theme='dark'] .sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-success.sf-t-mono) {
+	--spellbook-accent: var(--ok, var(--sf-c-success, var(--accent)));
+}
+
+[data-theme='dark'] .sf-col[data-role^='omp.editor']:has(.sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono)) {
 	--spellbook-drop: 0 12px 30px -16px rgba(0, 0, 0, 0.6);
 }
 
-.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono.sf-fx-pulse) {
+.sf-col[data-role^='omp.editor']:has(.sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono).sf-fx-pulse) {
 	animation: spellbook-breathe 1.4s ease-in-out infinite alternate;
 }
 
@@ -46,8 +56,13 @@
 	}
 }
 
-/* The chip: drawn like omp's bash chip (`omp.composer.mode`), in the accent. */
-.sf-col[data-role^='omp.editor'] [data-role='omp.composer.line']:has(> .sf-editor .sf-t-accent.sf-t-mono)::before {
+/* The typed prefix: the chip stands in for it. */
+.sf-col[data-role^='omp.editor'] .sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono) {
+	display: none;
+}
+
+/* The chip: drawn like omp's bash chip (`omp.composer.mode`), in the kind's colour. */
+.sf-col[data-role^='omp.editor'] [data-role='omp.composer.line']:has(> .sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono))::before {
 	content: '✦ spellbook';
 	flex: none;
 	height: 20px;
@@ -61,17 +76,25 @@
 	box-shadow: inset 0 0 0 1px rgb(from var(--spellbook-accent) r g b / 22%);
 }
 
+.sf-col[data-role^='omp.editor'] [data-role='omp.composer.line']:has(> .sf-editor .sf-t-success.sf-t-mono:not(.sf-t-strong))::before {
+	content: '✦ spellbook !';
+}
+
+.sf-col[data-role^='omp.editor'] [data-role='omp.composer.line']:has(> .sf-editor .sf-t-success.sf-t-mono.sf-t-strong)::before {
+	content: '✦ spellbook !!';
+}
+
 /* Reduce Motion: the glow stays, still. A hidden pane, or a sheet over it, pauses it. */
-.sf-still .sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+.sf-still .sf-col[data-role^='omp.editor']:has(.sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono)) {
 	animation: none;
 }
 
-:is(.sf-paused, .sf-covered) .sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+:is(.sf-paused, .sf-covered) .sf-col[data-role^='omp.editor']:has(.sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono)) {
 	animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.sf-col[data-role^='omp.editor']:has(.sf-editor .sf-t-accent.sf-t-mono) {
+	.sf-col[data-role^='omp.editor']:has(.sf-editor :is(.sf-t-accent.sf-t-mono, .sf-t-success.sf-t-mono)) {
 		animation: none;
 	}
 }

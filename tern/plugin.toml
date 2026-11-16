@@ -1,8 +1,8 @@
 schema = 1
 id = "spellbook"
 name = "Spellbook"
-version = "0.1.1"
-description = "Spellbook's look in omp's composer: a ✦ spellbook chip and a glow while a ? spell is typed or cast."
+version = "0.2.0"
+description = "Spellbook's look in omp's composer: a ✦ spellbook chip and a glow while a ?, ?! or ?!! spell is typed or cast."
 icon = "sparkle"
 window = "window.luau"
 styles = ["spellbook.css"]
