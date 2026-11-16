@@ -761,8 +761,9 @@ describe("composer history in omp", () => {
 		};
 		await handlers.get("session_start")!({}, ctx);
 		factory!({ requestRender() {} }, {}, {});
-		expect(await handlers.get("input")!({ text: "? review this repo", source: "interactive" }, ctx)).toEqual({ handled: true });
-		expect(await handlers.get("input")!({ text: "review this repo", source: "interactive" }, ctx)).toBeUndefined();
+		// Synchronous, not a promise: the decision happens in the same tick as Enter, before a morph frame can land.
+		expect(handlers.get("input")!({ text: "? review this repo", source: "interactive" }, ctx)).toEqual({ handled: true });
+		expect(handlers.get("input")!({ text: "review this repo", source: "interactive" }, ctx)).toBeUndefined();
 		expect(recalled).toEqual(["? review this repo"]);
 	});
 });

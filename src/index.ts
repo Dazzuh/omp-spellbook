@@ -120,8 +120,13 @@ export default function spellbook(pi: ExtensionAPI): void {
 					settings: Settings.instance,
 					preferences: getModelMatchPreferences(Settings.instance),
 				}),
-			unusable: model =>
-				ctx.modelRegistry.hasConfiguredAuth(model) ? undefined : `no API key for ${model.provider}/${model.id}`,
+			unusable: model => {
+				// As prewalk: offline mode keeps the cast on the session's provider.
+				if (lookup("models.offline")?.get(Settings.instance) === true && ctx.model && model.provider !== ctx.model.provider) {
+					return `offline mode keeps casts on the session's provider, ${ctx.model.provider}`;
+				}
+				return ctx.modelRegistry.hasConfiguredAuth(model) ? undefined : `no API key for ${model.provider}/${model.id}`;
+			},
 			session: () => (ctx.model ? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() } : undefined),
 		});
 	const modelName = (picked: { model: { provider: string; id: string }; thinkingLevel?: string }) =>
@@ -219,11 +224,11 @@ export default function spellbook(pi: ExtensionAPI): void {
 		book.dispose();
 	});
 
-	pi.on("input", async (event, ctx) => {
+	pi.on("input", (event, ctx) => {
 		if (event.source !== "interactive" || !ctx.hasUI) return undefined;
 		live = ctx;
-		// A sent prompt spell is saved to the spellbook file the settings name now.
-		await refresh(ctx);
+		// Decided in the same tick as Enter, so a morph can't finish between Enter and the decision. A cast re-reads
+		// the settings itself; a sent prompt spell is saved where the settings named at its cast.
 		return book.onInput(event.text);
 	});
 

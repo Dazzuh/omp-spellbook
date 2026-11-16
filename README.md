@@ -122,8 +122,8 @@ cast, no restart. From a shell: `omp plugin config list omp-spellbook`, `omp plu
 | `bookPath` | a path; `~` is your home folder, a relative path sits in `<omp agent dir>/spellbook` | `book.json` |
 | `model` | a model or role, as omp's prewalk settings take it: `@smol`, `anthropic/claude-haiku-5-5:low` | `@smol` |
 
-The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override `style` and `bookPath`. `style` also
-takes the letters `D`, `B`, `C` and `off`.
+The environment variables `SPELLBOOK_STYLE` and `SPELLBOOK_BOOK` override `style` and `bookPath`. `SPELLBOOK_STYLE`
+(and a `style` edited by hand in omp's plugin lockfile) also takes the letters `D`, `B`, `C` and `off`.
 
 ### Morph styles
 
