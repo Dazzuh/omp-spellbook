@@ -5,7 +5,7 @@
 - `?`, `?!` and `?!!` lines you press Enter on now go into omp's composer history (Up/Down, and omp's saved prompt
   history), in the order you sent them alongside your prompts and `!` commands. omp never recorded a line an
   extension took. Only what you pressed Enter on is recorded: a landed result you clear without sending stays out,
-  and Enter that only finishes a morph records nothing. The Tern half is unchanged.
+  and Enter that only finishes a morph records nothing. The Tern half only moves its version with the omp half.
 
 ## 0.2.0
 
