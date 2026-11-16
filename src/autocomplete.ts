@@ -44,8 +44,8 @@ export type SpellPick =
 	  };
 
 export interface SpellCompletionDeps {
-	/** Saved spells of `kind` matching `query`: commands for `?!`/`?!!`, prompts for `?`. */
-	find(query: string, kind: SpellKind): SpellMatch<Spell>[];
+	/** Saved spells of `kind` matching `query`: commands for `?!`/`?!!`, prompts for `?`. May read settings first. */
+	find(query: string, kind: SpellKind): SpellMatch<Spell>[] | Promise<SpellMatch<Spell>[]>;
 	/** Called once the editor applied a pick; puts the spell in the composer. */
 	onPick(pick: SpellPick): void;
 }
@@ -101,7 +101,7 @@ export function wrapAutocomplete<P extends CompletionProvider>(current: P, deps:
 			const { text, cast } = line;
 			const picks = new Map<string, SpellPick>();
 			const items: CompletionItem[] = [];
-			for (const match of deps.find(cast.query, cast.kind === "shell" ? "command" : "prompt")) {
+			for (const match of await deps.find(cast.query, cast.kind === "shell" ? "command" : "prompt")) {
 				// Each kind only ever offers its own: a saved command never lands on a `?` line.
 				const row = offer(text, cast, match.spell);
 				if (!row) continue;

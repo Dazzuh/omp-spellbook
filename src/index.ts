@@ -9,38 +9,68 @@ import {
 	theme,
 } from "@oh-my-pi/pi-coding-agent";
 import { getActiveRules, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { getModelMatchPreferences, resolveCliModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { getActiveSkills, type Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { isNativeRendering, motionEffectsEnabled } from "@oh-my-pi/pi-tui";
 import { wrapAutocomplete } from "./autocomplete";
+import { type CastStart, castFileName, castsDir, recentCasts } from "./castlog";
 import { installEditorHooks, type MorphDisplay, type SpellLook } from "./editor";
-import { type HelperSdk, runHelper } from "./helper";
-import { pickModel } from "./model";
+import { castAndLog, type HelperSdk } from "./helper";
+import { castModel } from "./model";
+import { nowRows, SpellbookPanel } from "./panel";
 import { parseCast } from "./parse";
 import { describeOs, detectShell, liveProbe, type ShellInfo } from "./platform";
-import { type LookupPlaces, parsePromptReply, parseShellReply, promptSystemPrompt, shellSystemPrompt } from "./prompt";
 import {
-	MORPH_STYLES,
-	parseStyle,
-	readSettings,
+	type LookupPlaces,
+	parsePromptReply,
+	parseShellReply,
+	promptSystemPrompt,
+	shellSystemPrompt,
+	writerRules,
+} from "./prompt";
+import {
+	loadSettings,
 	resolveBookPath,
-	settingsLocation,
+	type SettingsRead,
 	type SpellbookSettings,
-	writeSetting,
+	settingsFrom,
+	spellbookDir,
 } from "./settings";
-import { Spellbook } from "./spellbook";
+import { type CastResult, oneLine, Spellbook } from "./spellbook";
 
-const SDK: HelperSdk = {
-	createAgentSession,
-	inMemorySessionManager: cwd => SessionManager.inMemory(cwd),
-	// Each cast gets its own registry, so its agent id never meets the user's session's.
-	agentRegistry: () => new AgentRegistry(),
-	// The same array, not a copy: omp tells whether the user's session still owns the snapshot by identity.
-	activeSkills: () => getActiveSkills() as Skill[],
-	activeRules: getActiveRules,
-	restoreRules: setActiveRules,
-};
+/** Where this omp's cast logs go. */
+const castsFolder = () => castsDir(spellbookDir(getAgentDir()));
+
+/** omp's SDK as a cast uses it, its logs in the folder `dir` names at each cast. */
+export function ompSdk(dir: () => string): HelperSdk {
+	return {
+		createAgentSession,
+		// A session file of omp's own format in Spellbook's folder. Opened rather than created so omp writes no
+		// terminal breadcrumb for it: `omp --continue` must find the user's session, never a cast.
+		castLog: cwd =>
+			SessionManager.open(path.join(dir(), castFileName(new Date(), Bun.randomUUIDv7())), undefined, undefined, {
+				initialCwd: cwd,
+				suppressBreadcrumb: true,
+			}),
+		appendToLog: async (file, customType, data) => {
+			const log = await SessionManager.open(file, undefined, undefined, { suppressBreadcrumb: true });
+			try {
+				log.appendCustomEntry(customType, data);
+			} finally {
+				await log.close();
+			}
+		},
+		// Each cast gets its own registry, so its agent id never meets the user's session's.
+		agentRegistry: () => new AgentRegistry(),
+		// The same array, not a copy: omp tells whether the user's session still owns the snapshot by identity.
+		activeSkills: () => getActiveSkills() as Skill[],
+		activeRules: getActiveRules,
+		restoreRules: setActiveRules,
+	};
+}
+
+const SDK = ompSdk(castsFolder);
 
 function paint(color: string, text: string): string {
 	try {
@@ -79,12 +109,21 @@ function currentShell(): ShellInfo {
 
 export default function spellbook(pi: ExtensionAPI): void {
 	pi.setLabel("Spellbook");
-	const location = settingsLocation(getAgentDir());
-	let current: { settings: SpellbookSettings; problems: string[] } = readSettings(location);
-	const reload = () => {
-		current = readSettings(location);
+	const bookDir = spellbookDir(getAgentDir());
+	/** The settings as last read; every entry point re-reads them first, so a Configure change applies at once. */
+	let current: SettingsRead = settingsFrom({});
+	const reported = new Set<string>();
+	/** Re-read the settings from omp's plugin settings store; each new problem is reported once. */
+	const refresh = async (ctx: ExtensionContext): Promise<SpellbookSettings> => {
+		current = await loadSettings(ctx.cwd);
+		for (const problem of current.problems) {
+			if (reported.has(problem)) continue;
+			reported.add(problem);
+			if (ctx.hasUI) ctx.ui.notify(oneLine(`Spellbook settings: ${problem}`), "warning");
+		}
 		return current.settings;
 	};
+	const bookFile = () => resolveBookPath(bookDir, current.settings.bookPath);
 	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 	const reduceMotion = () => !motionEffectsEnabled() || display.ternReduceMotion;
 	const look: SpellLook = {
@@ -99,18 +138,30 @@ export default function spellbook(pi: ExtensionAPI): void {
 		if (!live) throw new Error("Spellbook used before session start");
 		return live;
 	};
-	/** The cast model as omp's roles configure it: role `spellbook`, else `smol`, else the session's model and thinking level. */
-	const castModel = (ctx: ExtensionContext) =>
-		pickModel({
-			role: roles => {
-				try {
-					return resolveRoleSelection(roles, Settings.instance, ctx.modelRegistry.getAvailable());
-				} catch {
-					return undefined;
+	/**
+	 * The cast model: the `model` setting resolved as omp resolves prewalk targets (role aliases,
+	 * `provider/id`, thinking level), else the session's model and thinking level with the reason.
+	 */
+	const pickModel = (ctx: ExtensionContext, selector: string) =>
+		castModel(selector, {
+			resolve: cliModel =>
+				resolveCliModel({
+					cliModel,
+					modelRegistry: ctx.modelRegistry,
+					settings: Settings.instance,
+					preferences: getModelMatchPreferences(Settings.instance),
+				}),
+			unusable: model => {
+				// As prewalk: offline mode keeps the cast on the session's provider.
+				if (lookup("models.offline")?.get(Settings.instance) === true && ctx.model && model.provider !== ctx.model.provider) {
+					return `offline mode keeps casts on the session's provider, ${ctx.model.provider}`;
 				}
+				return ctx.modelRegistry.hasConfiguredAuth(model) ? undefined : `no API key for ${model.provider}/${model.id}`;
 			},
 			session: () => (ctx.model ? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() } : undefined),
 		});
+	const modelName = (picked: { model: { provider: string; id: string }; thinkingLevel?: string }) =>
+		`${picked.model.provider}/${picked.model.id}${picked.thinkingLevel ? `:${picked.thinkingLevel}` : ""}`;
 	/** Where the cast model can look things up: this session's log and the project. */
 	const places = (ctx: ExtensionContext): LookupPlaces => ({
 		sessionLog: ctx.sessionManager.getSessionFile(),
@@ -118,29 +169,46 @@ export default function spellbook(pi: ExtensionAPI): void {
 		// The folders omp found the user's skills in (its own discovery), not the skills themselves.
 		skillFolders: [...new Set(getActiveSkills().filter(skill => !skill.hide).map(skill => path.dirname(skill.baseDir)))],
 	});
-	/** One cast: a read-only helper session on the cast model answers `description` under `system`. */
-	const cast = async (
-		system: string,
-		description: string,
+	/** One cast, logged: a read-only helper session on the cast model answers `description`. */
+	const cast = async <A>(
+		start: Pick<CastStart, "kind" | "sigil" | "description">,
 		signal: AbortSignal,
-	): Promise<{ reply: string; model: string; lookups: string[] }> => {
+		parse: (reply: string) => A | undefined,
+	): Promise<CastResult<A>> => {
 		const ctx = ctxNow();
-		const picked = castModel(ctx);
-		if (!picked) throw new Error("no model: set modelRoles.spellbook (or smol) in your omp config");
-		const { reply, lookups } = await runHelper(
+		const settings = await refresh(ctx);
+		const picked = pickModel(ctx, settings.model);
+		const model = `${picked.model.provider}/${picked.model.id}`;
+		const note = picked.fallback
+			? `model setting "${picked.selector}" not used: ${picked.fallback}; cast on the session's ${modelName(picked)}`
+			: undefined;
+		const lookIn = places(ctx);
+		const { answer, lookups, settle } = await castAndLog(
 			{
 				cwd: ctx.cwd,
 				model: picked.model,
 				thinkingLevel: picked.thinkingLevel,
 				settings: Settings.instance,
 				modelRegistry: ctx.modelRegistry,
-				system,
-				description,
+				system: rules =>
+					start.kind === "prompt"
+						? promptSystemPrompt(lookIn, writerRules(rules))
+						: shellSystemPrompt(lookIn, currentShell(), describeOs()),
+				description: start.description,
 				signal,
+				start: {
+					...start,
+					setting: settings.model,
+					model,
+					thinkingLevel: picked.thinkingLevel,
+					note,
+					headless: ctx.hasUI ? undefined : true,
+				},
 			},
 			SDK,
+			parse,
 		);
-		return { reply, model: `${picked.model.provider}/${picked.model.id}`, lookups };
+		return { answer, model, lookups, note, settle };
 	};
 
 	const book = new Spellbook({
@@ -154,24 +222,10 @@ export default function spellbook(pi: ExtensionAPI): void {
 		},
 		display,
 		settings: () => current.settings,
-		bookFile: () => resolveBookPath(location, current.settings.bookPath),
+		bookFile,
 		reduceMotion,
-		ask: async (description, signal) => {
-			const { reply, model, lookups } = await cast(
-				shellSystemPrompt(places(ctxNow()), currentShell(), describeOs()),
-				description,
-				signal,
-			);
-			const answer = parseShellReply(reply);
-			if (!answer) throw new Error(`${model} gave no command: ${reply}`);
-			return { answer, model, lookups };
-		},
-		askPrompt: async (description, signal) => {
-			const { reply, model, lookups } = await cast(promptSystemPrompt(places(ctxNow())), description, signal);
-			const answer = parsePromptReply(reply);
-			if (!answer) throw new Error(`${model} gave no prompt: ${reply}`);
-			return { answer, model, lookups };
-		},
+		ask: (description, signal, sigil) => cast({ kind: "shell", sigil, description }, signal, parseShellReply),
+		askPrompt: (description, signal) => cast({ kind: "prompt", description }, signal, parsePromptReply),
 		setTimeout: (fn, ms) => ctxNow().setTimeout(fn, ms),
 		clearTimeout: handle => live?.clearTimer(handle as never),
 		paint,
@@ -183,11 +237,14 @@ export default function spellbook(pi: ExtensionAPI): void {
 		book.dispose();
 		live = ctx;
 		if (!ctx.hasUI) return;
-		for (const problem of current.problems) ctx.ui.notify(`Spellbook settings: ${problem}`, "warning");
+		await refresh(ctx);
 		// Re-added on every session_start (/new, resume); wrapAutocomplete skips a provider it already wrapped.
 		ctx.ui.addAutocompleteProvider(provider =>
 			wrapAutocomplete(provider, {
-				find: (query, kind) => book.find(query, undefined, kind),
+				find: async (query, kind) => {
+					await refresh(ctxNow());
+					return book.find(query, undefined, kind);
+				},
 				onPick: pick => book.pick(pick),
 			}),
 		);
@@ -201,97 +258,122 @@ export default function spellbook(pi: ExtensionAPI): void {
 	pi.on("input", (event, ctx) => {
 		if (event.source !== "interactive" || !ctx.hasUI) return undefined;
 		live = ctx;
+		// Decided in the same tick as Enter, so a morph can't finish between Enter and the decision. A cast re-reads
+		// the settings itself; a sent prompt spell is saved where the settings named at its cast.
 		return book.onInput(event.text);
 	});
 
-	pi.on("user_bash", (event, ctx) => {
+	pi.on("user_bash", async (event, ctx) => {
 		live = ctx;
+		await refresh(ctx);
 		book.onUserBash(event.command);
 		return undefined;
 	});
 
+	/** The Now rows from the settings just read. */
+	const now = (ctx: ExtensionContext, settings: SpellbookSettings) => {
+		let model: string | undefined;
+		let fallback: string | undefined;
+		try {
+			const picked = pickModel(ctx, settings.model);
+			model = modelName(picked);
+			fallback = picked.fallback;
+		} catch (error) {
+			fallback = error instanceof Error ? error.message : String(error);
+		}
+		return nowRows({
+			style: settings.style,
+			bookFile: bookFile(),
+			modelSetting: settings.model,
+			model,
+			fallback,
+			shell: currentShell().shell,
+			castsDir: castsFolder(),
+			problems: current.problems,
+			overrides: ["SPELLBOOK_STYLE", "SPELLBOOK_BOOK"].flatMap(name => (process.env[name] ? [`${name}=${process.env[name]}`] : [])),
+		});
+	};
+
+	/** Open the panel over the session until Esc; it never enters the session or the model's context. */
+	const openPanel = (ctx: ExtensionContext, query: string) =>
+		ctx.ui.custom<void>(
+			(tui, _theme, _keybindings, done) =>
+				new SpellbookPanel(
+					{
+						find: (q, kind) => book.find(q, 50, kind).map(match => match.spell),
+						now: () => now(ctx, current.settings),
+						casts: () => recentCasts(castsFolder()),
+						land: spell => {
+							const from = ctx.ui.getEditorText();
+							// The composer's own `?!!` or `!!` keeps a command's output out of context, as Tab does.
+							const sigil = /^\s*\?!!|^\s*!!/.test(from) ? "!!" : "!";
+							book.pick(
+								spell.kind === "command"
+									? { kind: "command", from, sigil, words: spell.words, command: spell.command }
+									: { kind: "prompt", from, words: spell.words, prompt: spell.prompt },
+							);
+						},
+						forget: spell => book.forget(spell),
+						close: () => done(undefined),
+						requestRender: () => tui.requestRender(),
+						paint,
+					},
+					"spells",
+					query,
+				),
+			{ overlay: true },
+		);
+
 	pi.registerCommand("spellbook", {
-		description: "Spellbook: settings, saved spells, cast <description> (a command) or prompt <description>",
+		description: "Spellbook: saved spells, settings and recent casts in one panel; cast <description> (a command) or prompt <description>",
 		getArgumentCompletions: prefix =>
-			["style", "book", "list", "cast", "prompt", ...MORPH_STYLES.map(s => `style ${s}`)]
+			["list", "cast", "prompt"]
 				.filter(option => option.startsWith(prefix))
 				.map(option => ({ value: option, label: option })),
 		handler: async (args, ctx) => {
 			live = ctx;
-			// Headless runs (omp -p) have no UI to notify: print instead.
-			const say = (text: string, type: "info" | "warning" = "info") => {
-				if (ctx.hasUI) ctx.ui.notify(text, type);
-				else process.stdout.write(`${text}\n`);
-			};
+			const settings = await refresh(ctx);
 			const [sub = "", ...rest] = args.trim().split(/\s+/);
 			const arg = rest.join(" ").trim();
 			switch (sub.toLowerCase()) {
-				case "style": {
-					const style = arg ? parseStyle(arg) : undefined;
-					if (!style) {
-						say(`Spellbook style is ${current.settings.style}; choose ${MORPH_STYLES.join(", ")} (or D, B, C)`);
-						return;
-					}
-					writeSetting(location, "style", style);
-					reload();
-					say(`Spellbook style: ${style}`);
-					return;
-				}
-				case "book": {
-					if (arg) {
-						writeSetting(location, "bookPath", arg);
-						reload();
-					}
-					say(`Spellbook file: ${resolveBookPath(location, current.settings.bookPath)}`);
-					return;
-				}
-				case "list": {
-					const commands = book.find(arg, 20).map(m => `${m.spell.words} → ${m.spell.command}`);
-					const prompts = book
-						.find(arg, 20, "prompt")
-						.map(m => `${m.spell.words} → (prompt) ${m.spell.prompt.split(/\r?\n/, 1)[0]}`);
-					const lines = [...commands, ...prompts];
-					say(lines.length ? lines.join("\n") : "No saved spells match.");
-					return;
-				}
 				case "cast":
 				case "prompt": {
 					const kind = sub.toLowerCase() === "cast" ? "shell" : "prompt";
 					const request = parseCast(`${kind === "shell" ? "?!" : "?"} ${arg}`);
 					if (request?.kind !== kind) {
-						say(`Usage: /spellbook ${sub.toLowerCase()} <description>`, "warning");
+						const usage = `Usage: /spellbook ${sub.toLowerCase()} <description>`;
+						if (ctx.hasUI) ctx.ui.notify(usage, "warning");
+						else process.stdout.write(`${usage}\n`);
 						return;
 					}
 					if (ctx.hasUI) {
 						await book.cast(request);
 						return;
 					}
+					// Headless (omp -p): the answer is printed as JSON, nothing lands in a composer.
 					const started = Date.now();
 					const signal = AbortSignal.timeout(300_000);
 					const result =
-						kind === "shell"
-							? await book.deps.ask(request.description, signal)
+						request.kind === "shell"
+							? await book.deps.ask(request.description, signal, request.sigil)
 							: await book.deps.askPrompt(request.description, signal);
 					const ms = Date.now() - started;
+					await result.settle?.({ outcome: "landed", landed: result.answer.text });
 					process.stdout.write(
-						`${JSON.stringify({ ...result.answer, model: result.model, ms, lookups: result.lookups ?? [] })}\n`,
+						`${JSON.stringify({ ...result.answer, model: result.model, ms, lookups: result.lookups ?? [], ...(result.note ? { note: result.note } : {}) })}\n`,
 					);
 					return;
 				}
 				default: {
-					const picked = castModel(ctx);
-					const model = picked
-						? `${picked.model.provider}/${picked.model.id}${picked.thinkingLevel ? `:${picked.thinkingLevel}` : ""} (via ${picked.via})`
-						: "none";
-					say(
-						[
-							`Style: ${current.settings.style}   (/spellbook style diff|decode|rewind|none)`,
-							`File: ${resolveBookPath(location, current.settings.bookPath)}`,
-							`Settings: ${location.file}`,
-							`Model: ${model}`,
-							`Shell: ${currentShell().shell}`,
-							"Type `? <description>` for an omp prompt, `?! <description>` for a command (`?!!` for `!!`); Tab on a `?` or `?!` line lists saved ones.",
-						].join("\n"),
+					if (!ctx.hasUI) {
+						// Headless: the Now rows as text, the one part of the panel that needs no keyboard.
+						process.stdout.write(`${now(ctx, settings).map(row => `${row.label}: ${row.value}`).join("\n")}\n`);
+						return;
+					}
+					// Not awaited: the panel stays open while the session carries on, mid-turn too.
+					// `/spellbook list <words>` and `/spellbook <words>` both open Spells searching for the words.
+					openPanel(ctx, sub.toLowerCase() === "list" ? arg : args.trim()).catch(error =>
+						ctx.ui.notify(oneLine(`Spellbook panel: ${error instanceof Error ? error.message : String(error)}`), "error"),
 					);
 				}
 			}

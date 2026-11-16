@@ -13,6 +13,8 @@ import {
 	SPELL_SIGIL_TOKENS,
 	type SpellLook,
 } from "../src/editor";
+import { SUPERSEDED } from "../src/castlog";
+import type { CastSettle } from "../src/helper";
 import spellbook from "../src/index";
 import type { CastAnswer, PromptAnswer } from "../src/prompt";
 import type { MorphStyle } from "../src/settings";
@@ -25,7 +27,16 @@ const PROMPT: PromptAnswer = {
 
 /** A fake composer plus a manual clock, so frames can be counted and stepped. */
 function harness(
-	options: { answer?: CastAnswer; prompt?: PromptAnswer; style?: MorphStyle; reduceMotion?: boolean; gate?: Promise<void> } = {},
+	options: {
+		answer?: CastAnswer;
+		prompt?: PromptAnswer;
+		style?: MorphStyle;
+		reduceMotion?: boolean;
+		gate?: Promise<void>;
+		note?: string;
+		/** The cast fails with this error. */
+		fail?: string;
+	} = {},
 ) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spellbook-flow-"));
 	const state = {
@@ -38,6 +49,10 @@ function harness(
 		timers: [] as (() => void)[],
 		/** The composer's Up/Down history, oldest first: what Spellbook remembers and what omp records itself. */
 		recalled: [] as string[],
+		/** How each answered cast was settled for its log. */
+		settled: [] as CastSettle[],
+		/** Each cast's abort signal. */
+		signals: [] as AbortSignal[],
 	};
 	const display: MorphDisplay = { frame: undefined, ternReduceMotion: false, editor: undefined, casting: undefined };
 	const answer: CastAnswer = options.answer ?? { text: "ls -la", explain: "Lists every file here.", destructive: false };
@@ -59,18 +74,22 @@ function harness(
 			},
 		},
 		display,
-		settings: () => ({ style: options.style ?? "diff", bookPath: "book.json" }),
+		settings: () => ({ style: options.style ?? "diff", bookPath: "book.json", model: "@smol" }),
 		bookFile: () => path.join(dir, "book.json"),
 		reduceMotion: () => options.reduceMotion === true || display.ternReduceMotion,
-		ask: async description => {
+		ask: async (description, signal) => {
 			state.asked.push(description);
+			state.signals.push(signal);
 			await options.gate;
-			return { answer, model: "test/model" };
+			if (options.fail) throw new Error(options.fail);
+			return { answer, model: "test/model", note: options.note, settle: async s => void state.settled.push(s) };
 		},
-		askPrompt: async description => {
+		askPrompt: async (description, signal) => {
 			state.askedPrompts.push(description);
+			state.signals.push(signal);
 			await options.gate;
-			return { answer: options.prompt ?? PROMPT, model: "test/model" };
+			if (options.fail) throw new Error(options.fail);
+			return { answer: options.prompt ?? PROMPT, model: "test/model", note: options.note, settle: async s => void state.settled.push(s) };
 		},
 		setTimeout: fn => {
 			state.timers.push(fn);
@@ -112,6 +131,18 @@ describe("?! and ?!!", () => {
 		expect(h.state.line).toContain("Lists every file here.");
 		expect(h.display.frame).toBeUndefined();
 		expect(h.state.asked).toEqual(["list files here"]);
+	});
+
+	test("a model fallback note shows on the line under the composer, after the explanation", async () => {
+		h = harness({ note: 'model "@nope": not found; used the session\'s a/b:medium' });
+		h.submit("?! list files here");
+		await h.flush();
+		expect(h.state.text).toBe("!ls -la");
+		expect(h.state.line).toContain("Lists every file here. <warning>(model \"@nope\": not found; used the session's a/b:medium)</warning>");
+		h = harness({ note: "fell back" });
+		h.submit("? review the repo");
+		await h.flush();
+		expect(h.state.line).toContain("<warning>(fell back)</warning>");
 	});
 
 	test("?!! <desc> ends as !!<command>", async () => {
@@ -666,6 +697,50 @@ describe("casting state", () => {
 	});
 });
 
+describe("what each cast's log is told", () => {
+	test("a landed answer is settled as landed, with the composer text it became", async () => {
+		h = harness();
+		h.submit("?!! list files here");
+		await h.flush();
+		expect(h.state.settled).toEqual([{ outcome: "landed", landed: "!!ls -la" }]);
+	});
+
+	test("an answer that arrives after the composer changed is settled as superseded and not inserted", async () => {
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		h = harness({ gate });
+		h.submit("? review the repo");
+		await Promise.resolve();
+		h.state.text = "something I typed meanwhile";
+		release();
+		await h.flush();
+		expect(h.state.text).toBe("something I typed meanwhile");
+		expect(h.state.settled).toEqual([{ outcome: "superseded", reason: "the composer changed while the model answered" }]);
+	});
+
+	test("a cast replaced by a newer one is aborted as superseded; one dropped for other input, as aborted", async () => {
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		h = harness({ gate });
+		h.submit("?! list files here");
+		await Promise.resolve();
+		h.submit("?! show disk usage");
+		await Promise.resolve();
+		h.submit("never mind");
+		release();
+		await h.flush();
+		expect(h.state.signals.map(signal => signal.reason)).toEqual([SUPERSEDED, "aborted: something else was sent"]);
+	});
+
+	test("a failed cast is one toast line, pointing at Recent casts; the full error stays in its log", async () => {
+		h = harness({ fail: `anthropic/claude-haiku-5-5 gave no command; ${"x".repeat(300)}\nsecond line` });
+		h.submit("?! list files here");
+		await h.flush();
+		expect(h.state.notes).toHaveLength(1);
+		expect(h.state.notes[0]).not.toContain("\n");
+		expect(h.state.notes[0]).toEndWith("… (/spellbook → Recent casts)");
+		expect(h.state.notes[0]!.length).toBeLessThan(160);
+	});
+});
+
 describe("/spellbook cast", () => {
 	test("casts its words as a ?! shell spell", async () => {
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
@@ -742,6 +817,7 @@ describe("composer history in omp", () => {
 		};
 		await handlers.get("session_start")!({}, ctx);
 		factory!({ requestRender() {} }, {}, {});
+		// Synchronous, not a promise: the decision happens in the same tick as Enter, before a morph frame can land.
 		expect(handlers.get("input")!({ text: "? review this repo", source: "interactive" }, ctx)).toEqual({ handled: true });
 		expect(handlers.get("input")!({ text: "review this repo", source: "interactive" }, ctx)).toBeUndefined();
 		expect(recalled).toEqual(["? review this repo"]);
